@@ -21,16 +21,23 @@ export async function createCodeAssistContentGenerator(
 ): Promise<ContentGenerator> {
   if (
     authType === AuthType.LOGIN_WITH_GOOGLE ||
-    authType === AuthType.CLOUD_SHELL
+    authType === AuthType.COMPUTE_ADC
   ) {
     const authClient = await getOauthClient(authType, config);
-    const userData = await setupUser(authClient);
+    const userData = await setupUser(
+      authClient,
+      config.getValidationHandler(),
+      httpOptions,
+    );
     return new CodeAssistServer(
       authClient,
       userData.projectId,
       httpOptions,
       sessionId,
       userData.userTier,
+      userData.userTierName,
+      userData.paidTier,
+      config,
     );
   }
 

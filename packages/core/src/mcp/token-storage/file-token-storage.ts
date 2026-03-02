@@ -10,6 +10,7 @@ import * as os from 'node:os';
 import * as crypto from 'node:crypto';
 import { BaseTokenStorage } from './base-token-storage.js';
 import type { OAuthCredentials } from './types.js';
+import { GEMINI_DIR, homedir } from '../../utils/paths.js';
 
 export class FileTokenStorage extends BaseTokenStorage {
   private readonly tokenFilePath: string;
@@ -17,7 +18,7 @@ export class FileTokenStorage extends BaseTokenStorage {
 
   constructor(serviceName: string) {
     super(serviceName);
-    const configDir = path.join(os.homedir(), '.gemini');
+    const configDir = path.join(homedir(), GEMINI_DIR);
     this.tokenFilePath = path.join(configDir, 'mcp-oauth-tokens-v2.json');
     this.encryptionKey = this.deriveEncryptionKey();
   }
@@ -71,12 +72,14 @@ export class FileTokenStorage extends BaseTokenStorage {
     try {
       const data = await fs.readFile(this.tokenFilePath, 'utf-8');
       const decrypted = this.decrypt(data);
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       const tokens = JSON.parse(decrypted) as Record<string, OAuthCredentials>;
       return new Map(Object.entries(tokens));
     } catch (error: unknown) {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       const err = error as NodeJS.ErrnoException & { message?: string };
       if (err.code === 'ENOENT') {
-        throw new Error('Token file does not exist');
+        return new Map();
       }
       if (
         err.message?.includes('Invalid encrypted data format') ||
@@ -84,7 +87,12 @@ export class FileTokenStorage extends BaseTokenStorage {
           'Unsupported state or unable to authenticate data',
         )
       ) {
-        throw new Error('Token file corrupted');
+        // Decryption failed - this can happen when switching between auth types
+        // or if the file is genuinely corrupted.
+        throw new Error(
+          `Corrupted token file detected at: ${this.tokenFilePath}\n` +
+            `Please delete or rename this file to resolve the issue.`,
+        );
       }
       throw error;
     }
@@ -143,6 +151,7 @@ export class FileTokenStorage extends BaseTokenStorage {
       try {
         await fs.unlink(this.tokenFilePath);
       } catch (error: unknown) {
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
         const err = error as NodeJS.ErrnoException;
         if (err.code !== 'ENOENT') {
           throw error;
@@ -175,6 +184,7 @@ export class FileTokenStorage extends BaseTokenStorage {
     try {
       await fs.unlink(this.tokenFilePath);
     } catch (error: unknown) {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       const err = error as NodeJS.ErrnoException;
       if (err.code !== 'ENOENT') {
         throw error;

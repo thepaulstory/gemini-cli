@@ -8,6 +8,7 @@ import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { CommandService } from './CommandService.js';
 import { type ICommandLoader } from './types.js';
 import { CommandKind, type SlashCommand } from '../ui/commands/types.js';
+import { debugLogger } from '@google/gemini-cli-core';
 
 const createMockCommand = (name: string, kind: CommandKind): SlashCommand => ({
   name,
@@ -35,7 +36,7 @@ class MockCommandLoader implements ICommandLoader {
 
 describe('CommandService', () => {
   beforeEach(() => {
-    vi.spyOn(console, 'debug').mockImplementation(() => {});
+    vi.spyOn(debugLogger, 'debug').mockImplementation(() => {});
   });
 
   afterEach(() => {
@@ -139,7 +140,7 @@ describe('CommandService', () => {
     const commands = service.getCommands();
     expect(commands).toHaveLength(1);
     expect(commands).toEqual([mockCommandA]);
-    expect(console.debug).toHaveBeenCalledWith(
+    expect(debugLogger.debug).toHaveBeenCalledWith(
       'A command loader failed:',
       error,
     );
@@ -348,5 +349,118 @@ describe('CommandService', () => {
     );
     expect(deployExtension).toBeDefined();
     expect(deployExtension?.description).toBe('[gcp] Deploy to Google Cloud');
+  });
+
+  it('should report conflicts via getConflicts', async () => {
+    const builtinCommand = createMockCommand('deploy', CommandKind.BUILT_IN);
+    const extensionCommand = {
+      ...createMockCommand('deploy', CommandKind.FILE),
+      extensionName: 'firebase',
+    };
+
+    const mockLoader = new MockCommandLoader([
+      builtinCommand,
+      extensionCommand,
+    ]);
+
+    const service = await CommandService.create(
+      [mockLoader],
+      new AbortController().signal,
+    );
+
+    const conflicts = service.getConflicts();
+    expect(conflicts).toHaveLength(1);
+
+    expect(conflicts[0]).toMatchObject({
+      name: 'deploy',
+      winner: builtinCommand,
+      losers: [
+        {
+          renamedTo: 'firebase.deploy',
+          command: expect.objectContaining({
+            name: 'deploy',
+            extensionName: 'firebase',
+          }),
+        },
+      ],
+    });
+  });
+
+  it('should report extension vs extension conflicts correctly', async () => {
+    // Both extensions try to register 'deploy'
+    const extension1Command = {
+      ...createMockCommand('deploy', CommandKind.FILE),
+      extensionName: 'firebase',
+    };
+    const extension2Command = {
+      ...createMockCommand('deploy', CommandKind.FILE),
+      extensionName: 'aws',
+    };
+
+    const mockLoader = new MockCommandLoader([
+      extension1Command,
+      extension2Command,
+    ]);
+
+    const service = await CommandService.create(
+      [mockLoader],
+      new AbortController().signal,
+    );
+
+    const conflicts = service.getConflicts();
+    expect(conflicts).toHaveLength(1);
+
+    expect(conflicts[0]).toMatchObject({
+      name: 'deploy',
+      winner: expect.objectContaining({
+        name: 'deploy',
+        extensionName: 'firebase',
+      }),
+      losers: [
+        {
+          renamedTo: 'aws.deploy', // ext2 is 'aws' and it lost because it was second in the list
+          command: expect.objectContaining({
+            name: 'deploy',
+            extensionName: 'aws',
+          }),
+        },
+      ],
+    });
+  });
+
+  it('should report multiple conflicts for the same command name', async () => {
+    const builtinCommand = createMockCommand('deploy', CommandKind.BUILT_IN);
+    const ext1 = {
+      ...createMockCommand('deploy', CommandKind.FILE),
+      extensionName: 'ext1',
+    };
+    const ext2 = {
+      ...createMockCommand('deploy', CommandKind.FILE),
+      extensionName: 'ext2',
+    };
+
+    const mockLoader = new MockCommandLoader([builtinCommand, ext1, ext2]);
+
+    const service = await CommandService.create(
+      [mockLoader],
+      new AbortController().signal,
+    );
+
+    const conflicts = service.getConflicts();
+    expect(conflicts).toHaveLength(1);
+    expect(conflicts[0].name).toBe('deploy');
+    expect(conflicts[0].losers).toHaveLength(2);
+    expect(conflicts[0].losers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          renamedTo: 'ext1.deploy',
+          command: expect.objectContaining({ extensionName: 'ext1' }),
+        }),
+        expect.objectContaining({
+          renamedTo: 'ext2.deploy',
+          command: expect.objectContaining({ extensionName: 'ext2' }),
+        }),
+      ]),
+    );
   });
 });

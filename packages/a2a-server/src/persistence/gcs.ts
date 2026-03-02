@@ -9,7 +9,7 @@ import { gzipSync, gunzipSync } from 'node:zlib';
 import * as tar from 'tar';
 import * as fse from 'fs-extra';
 import { promises as fsPromises, createReadStream } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir } from '@google/gemini-cli-core';
 import { join } from 'node:path';
 import type { Task as SDKTask } from '@a2a-js/sdk';
 import type { TaskStore } from '@a2a-js/sdk/server';
@@ -22,6 +22,13 @@ type ObjectType = 'metadata' | 'workspace';
 
 const getTmpArchiveFilename = (taskId: string): string =>
   `task-${taskId}-workspace-${uuidv4()}.tar.gz`;
+
+// Validate the taskId to prevent path traversal attacks by ensuring it only contains safe characters.
+const isTaskIdValid = (taskId: string): boolean => {
+  // Allow only alphanumeric characters, dashes, and underscores, and ensure it's not empty.
+  const validTaskIdRegex = /^[a-zA-Z0-9_-]+$/;
+  return validTaskIdRegex.test(taskId);
+};
 
 export class GCSTaskStore implements TaskStore {
   private storage: Storage;
@@ -78,6 +85,9 @@ export class GCSTaskStore implements TaskStore {
   }
 
   private getObjectPath(taskId: string, type: ObjectType): string {
+    if (!isTaskIdValid(taskId)) {
+      throw new Error(`Invalid taskId: ${taskId}`);
+    }
     return `tasks/${taskId}/${type}.tar.gz`;
   }
 
@@ -85,6 +95,7 @@ export class GCSTaskStore implements TaskStore {
     await this.ensureBucketInitialized();
     const taskId = task.id;
     const persistedState = getPersistedState(
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       task.metadata as PersistedTaskMetadata,
     );
 
@@ -235,6 +246,7 @@ export class GCSTaskStore implements TaskStore {
       }
       const [compressedMetadata] = await metadataFile.download();
       const jsonData = gunzipSync(compressedMetadata).toString();
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
       const loadedMetadata = JSON.parse(jsonData);
       logger.info(`Task ${taskId} metadata loaded from GCS.`);
 
@@ -271,12 +283,14 @@ export class GCSTaskStore implements TaskStore {
 
       return {
         id: taskId,
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         contextId: loadedMetadata._contextId || uuidv4(),
         kind: 'task',
         status: {
           state: persistedState._taskState,
           timestamp: new Date().toISOString(),
         },
+        // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
         metadata: loadedMetadata,
         history: [],
         artifacts: [],

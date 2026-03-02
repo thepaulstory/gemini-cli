@@ -6,56 +6,79 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { homedir } from 'node:os';
 import * as dotenv from 'dotenv';
 
-import type { TelemetryTarget } from '@google/gemini-cli-core';
 import {
   AuthType,
   Config,
-  type ConfigParameters,
   FileDiscoveryService,
   ApprovalMode,
   loadServerHierarchicalMemory,
-  GEMINI_CONFIG_DIR,
+  GEMINI_DIR,
   DEFAULT_GEMINI_EMBEDDING_MODEL,
-  DEFAULT_GEMINI_MODEL,
+  startupProfiler,
+  PREVIEW_GEMINI_MODEL,
+  homedir,
+  GitService,
+  fetchAdminControlsOnce,
+  getCodeAssistServer,
+  ExperimentFlags,
+  type TelemetryTarget,
+  type ConfigParameters,
+  type ExtensionLoader,
 } from '@google/gemini-cli-core';
 
 import { logger } from '../utils/logger.js';
 import type { Settings } from './settings.js';
-import type { Extension } from './extension.js';
 import { type AgentSettings, CoderAgentEvent } from '../types.js';
 
 export async function loadConfig(
   settings: Settings,
-  extensions: Extension[],
+  extensionLoader: ExtensionLoader,
   taskId: string,
 ): Promise<Config> {
-  const mcpServers = mergeMcpServers(settings, extensions);
   const workspaceDir = process.cwd();
   const adcFilePath = process.env['GOOGLE_APPLICATION_CREDENTIALS'];
 
+  const folderTrust =
+    settings.folderTrust === true ||
+    process.env['GEMINI_FOLDER_TRUST'] === 'true';
+
+  let checkpointing = process.env['CHECKPOINTING']
+    ? process.env['CHECKPOINTING'] === 'true'
+    : settings.checkpointing?.enabled;
+
+  if (checkpointing) {
+    if (!(await GitService.verifyGitAvailability())) {
+      logger.warn(
+        '[Config] Checkpointing is enabled but git is not installed. Disabling checkpointing.',
+      );
+      checkpointing = false;
+    }
+  }
+
   const configParams: ConfigParameters = {
     sessionId: taskId,
-    model: DEFAULT_GEMINI_MODEL,
+    model: PREVIEW_GEMINI_MODEL,
     embeddingModel: DEFAULT_GEMINI_EMBEDDING_MODEL,
     sandbox: undefined, // Sandbox might not be relevant for a server-side agent
     targetDir: workspaceDir, // Or a specific directory the agent operates on
     debugMode: process.env['DEBUG'] === 'true' || false,
     question: '', // Not used in server mode directly like CLI
-    fullContext: false, // Server might have different context needs
-    coreTools: settings.coreTools || undefined,
-    excludeTools: settings.excludeTools || undefined,
+
+    coreTools: settings.coreTools || settings.tools?.core || undefined,
+    excludeTools: settings.excludeTools || settings.tools?.exclude || undefined,
+    allowedTools: settings.allowedTools || settings.tools?.allowed || undefined,
     showMemoryUsage: settings.showMemoryUsage || false,
     approvalMode:
       process.env['GEMINI_YOLO_MODE'] === 'true'
         ? ApprovalMode.YOLO
         : ApprovalMode.DEFAULT,
-    mcpServers,
+    mcpServers: settings.mcpServers,
     cwd: workspaceDir,
     telemetry: {
       enabled: settings.telemetry?.enabled,
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       target: settings.telemetry?.target as TelemetryTarget,
       otlpEndpoint:
         process.env['OTEL_EXPORTER_OTLP_ENDPOINT'] ??
@@ -65,74 +88,91 @@ export async function loadConfig(
     // Git-aware file filtering settings
     fileFiltering: {
       respectGitIgnore: settings.fileFiltering?.respectGitIgnore,
+      respectGeminiIgnore: settings.fileFiltering?.respectGeminiIgnore,
       enableRecursiveFileSearch:
         settings.fileFiltering?.enableRecursiveFileSearch,
+      customIgnoreFilePaths: [
+        ...(settings.fileFiltering?.customIgnoreFilePaths || []),
+        ...(process.env['CUSTOM_IGNORE_FILE_PATHS']
+          ? process.env['CUSTOM_IGNORE_FILE_PATHS'].split(path.delimiter)
+          : []),
+      ],
     },
     ideMode: false,
+    folderTrust,
+    trustedFolder: true,
+    extensionLoader,
+    checkpointing,
+    interactive: true,
+    enableInteractiveShell: true,
+    ptyInfo: 'auto',
   };
 
-  const fileService = new FileDiscoveryService(workspaceDir);
-  const extensionContextFilePaths = extensions.flatMap((e) => e.contextFiles);
-  const { memoryContent, fileCount } = await loadServerHierarchicalMemory(
-    workspaceDir,
-    [workspaceDir],
-    false,
-    fileService,
-    extensionContextFilePaths,
-    true, /// TODO: Wire up folder trust logic here.
-  );
+  const fileService = new FileDiscoveryService(workspaceDir, {
+    respectGitIgnore: configParams?.fileFiltering?.respectGitIgnore,
+    respectGeminiIgnore: configParams?.fileFiltering?.respectGeminiIgnore,
+    customIgnoreFilePaths: configParams?.fileFiltering?.customIgnoreFilePaths,
+  });
+  const { memoryContent, fileCount, filePaths } =
+    await loadServerHierarchicalMemory(
+      workspaceDir,
+      [workspaceDir],
+      false,
+      fileService,
+      extensionLoader,
+      folderTrust,
+    );
   configParams.userMemory = memoryContent;
   configParams.geminiMdFileCount = fileCount;
-  const config = new Config({
+  configParams.geminiMdFilePaths = filePaths;
+
+  // Set an initial config to use to get a code assist server.
+  // This is needed to fetch admin controls.
+  const initialConfig = new Config({
     ...configParams,
   });
+
+  const codeAssistServer = getCodeAssistServer(initialConfig);
+
+  const adminControlsEnabled =
+    initialConfig.getExperiments()?.flags[ExperimentFlags.ENABLE_ADMIN_CONTROLS]
+      ?.boolValue ?? false;
+
+  // Initialize final config parameters to the previous parameters.
+  // If no admin controls are needed, these will be used as-is for the final
+  // config.
+  const finalConfigParams = { ...configParams };
+  if (adminControlsEnabled) {
+    const adminSettings = await fetchAdminControlsOnce(
+      codeAssistServer,
+      adminControlsEnabled,
+    );
+
+    // Admin settings are able to be undefined if unset, but if any are present,
+    // we should initialize them all.
+    // If any are present, undefined settings should be treated as if they were
+    // set to false.
+    // If NONE are present, disregard admin settings entirely, and pass the
+    // final config as is.
+    if (Object.keys(adminSettings).length !== 0) {
+      finalConfigParams.disableYoloMode = !adminSettings.strictModeDisabled;
+      finalConfigParams.mcpEnabled = adminSettings.mcpSetting?.mcpEnabled;
+      finalConfigParams.extensionsEnabled =
+        adminSettings.cliFeatureSetting?.extensionsSetting?.extensionsEnabled;
+    }
+  }
+
+  const config = new Config(finalConfigParams);
+
   // Needed to initialize ToolRegistry, and git checkpointing if enabled
   await config.initialize();
 
-  if (process.env['USE_CCPA']) {
-    logger.info('[Config] Using CCPA Auth:');
-    try {
-      if (adcFilePath) {
-        path.resolve(adcFilePath);
-      }
-    } catch (e) {
-      logger.error(
-        `[Config] USE_CCPA env var is true but unable to resolve GOOGLE_APPLICATION_CREDENTIALS file path ${adcFilePath}. Error ${e}`,
-      );
-    }
-    await config.refreshAuth(AuthType.LOGIN_WITH_GOOGLE);
-    logger.info(
-      `[Config] GOOGLE_CLOUD_PROJECT: ${process.env['GOOGLE_CLOUD_PROJECT']}`,
-    );
-  } else if (process.env['GEMINI_API_KEY']) {
-    logger.info('[Config] Using Gemini API Key');
-    await config.refreshAuth(AuthType.USE_GEMINI);
-  } else {
-    const errorMessage =
-      '[Config] Unable to set GeneratorConfig. Please provide a GEMINI_API_KEY or set USE_CCPA.';
-    logger.error(errorMessage);
-    throw new Error(errorMessage);
-  }
+  await config.waitForMcpInit();
+  startupProfiler.flush(config);
+
+  await refreshAuthentication(config, adcFilePath, 'Config');
 
   return config;
-}
-
-export function mergeMcpServers(settings: Settings, extensions: Extension[]) {
-  const mcpServers = { ...(settings.mcpServers || {}) };
-  for (const extension of extensions) {
-    Object.entries(extension.config.mcpServers || {}).forEach(
-      ([key, server]) => {
-        if (mcpServers[key]) {
-          console.warn(
-            `Skipping extension MCP config for server with key "${key}" as it already exists.`,
-          );
-          return;
-        }
-        mcpServers[key] = server;
-      },
-    );
-  }
-  return mcpServers;
 }
 
 export function setTargetDir(agentSettings: AgentSettings | undefined): string {
@@ -174,7 +214,7 @@ function findEnvFile(startDir: string): string | null {
   let currentDir = path.resolve(startDir);
   while (true) {
     // prefer gemini-specific .env under GEMINI_DIR
-    const geminiEnvPath = path.join(currentDir, GEMINI_CONFIG_DIR, '.env');
+    const geminiEnvPath = path.join(currentDir, GEMINI_DIR, '.env');
     if (fs.existsSync(geminiEnvPath)) {
       return geminiEnvPath;
     }
@@ -185,11 +225,7 @@ function findEnvFile(startDir: string): string | null {
     const parentDir = path.dirname(currentDir);
     if (parentDir === currentDir || !parentDir) {
       // check .env under home as fallback, again preferring gemini-specific .env
-      const homeGeminiEnvPath = path.join(
-        process.cwd(),
-        GEMINI_CONFIG_DIR,
-        '.env',
-      );
+      const homeGeminiEnvPath = path.join(process.cwd(), GEMINI_DIR, '.env');
       if (fs.existsSync(homeGeminiEnvPath)) {
         return homeGeminiEnvPath;
       }
@@ -200,5 +236,35 @@ function findEnvFile(startDir: string): string | null {
       return null;
     }
     currentDir = parentDir;
+  }
+}
+
+async function refreshAuthentication(
+  config: Config,
+  adcFilePath: string | undefined,
+  logPrefix: string,
+): Promise<void> {
+  if (process.env['USE_CCPA']) {
+    logger.info(`[${logPrefix}] Using CCPA Auth:`);
+    try {
+      if (adcFilePath) {
+        path.resolve(adcFilePath);
+      }
+    } catch (e) {
+      logger.error(
+        `[${logPrefix}] USE_CCPA env var is true but unable to resolve GOOGLE_APPLICATION_CREDENTIALS file path ${adcFilePath}. Error ${e}`,
+      );
+    }
+    await config.refreshAuth(AuthType.LOGIN_WITH_GOOGLE);
+    logger.info(
+      `[${logPrefix}] GOOGLE_CLOUD_PROJECT: ${process.env['GOOGLE_CLOUD_PROJECT']}`,
+    );
+  } else if (process.env['GEMINI_API_KEY']) {
+    logger.info(`[${logPrefix}] Using Gemini API Key`);
+    await config.refreshAuth(AuthType.USE_GEMINI);
+  } else {
+    const errorMessage = `[${logPrefix}] Unable to set GeneratorConfig. Please provide a GEMINI_API_KEY or set USE_CCPA.`;
+    logger.error(errorMessage);
+    throw new Error(errorMessage);
   }
 }

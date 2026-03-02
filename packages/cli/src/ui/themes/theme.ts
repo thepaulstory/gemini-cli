@@ -5,8 +5,23 @@
  */
 
 import type { CSSProperties } from 'react';
+
 import type { SemanticColors } from './semantic-tokens.js';
-import { resolveColor } from './color-utils.js';
+
+import {
+  resolveColor,
+  interpolateColor,
+  getThemeTypeFromBackgroundColor,
+} from './color-utils.js';
+
+import type { CustomTheme } from '@google/gemini-cli-core';
+import {
+  DEFAULT_BACKGROUND_OPACITY,
+  DEFAULT_INPUT_BACKGROUND_OPACITY,
+  DEFAULT_BORDER_OPACITY,
+} from '../constants.js';
+
+export type { CustomTheme };
 
 export type ThemeType = 'light' | 'dark' | 'ansi' | 'custom';
 
@@ -25,62 +40,16 @@ export interface ColorsTheme {
   DiffRemoved: string;
   Comment: string;
   Gray: string;
-  GradientColors?: string[];
-}
-
-export interface CustomTheme {
-  type: 'custom';
-  name: string;
-
-  text?: {
-    primary?: string;
-    secondary?: string;
-    link?: string;
-    accent?: string;
-  };
-  background?: {
-    primary?: string;
-    diff?: {
-      added?: string;
-      removed?: string;
-    };
-  };
-  border?: {
-    default?: string;
-    focused?: string;
-  };
-  ui?: {
-    comment?: string;
-    symbol?: string;
-    gradient?: string[];
-  };
-  status?: {
-    error?: string;
-    success?: string;
-    warning?: string;
-  };
-
-  // Legacy properties (all optional)
-  Background?: string;
-  Foreground?: string;
-  LightBlue?: string;
-  AccentBlue?: string;
-  AccentPurple?: string;
-  AccentCyan?: string;
-  AccentGreen?: string;
-  AccentYellow?: string;
-  AccentRed?: string;
-  DiffAdded?: string;
-  DiffRemoved?: string;
-  Comment?: string;
-  Gray?: string;
+  DarkGray: string;
+  InputBackground?: string;
+  MessageBackground?: string;
   GradientColors?: string[];
 }
 
 export const lightTheme: ColorsTheme = {
   type: 'light',
   Background: '#FAFAFA',
-  Foreground: '#3C3C43',
+  Foreground: '',
   LightBlue: '#89BDCD',
   AccentBlue: '#3B82F6',
   AccentPurple: '#8B5CF6',
@@ -92,13 +61,24 @@ export const lightTheme: ColorsTheme = {
   DiffRemoved: '#FFCCCC',
   Comment: '#008000',
   Gray: '#97a0b0',
+  DarkGray: interpolateColor('#FAFAFA', '#97a0b0', DEFAULT_BORDER_OPACITY),
+  InputBackground: interpolateColor(
+    '#FAFAFA',
+    '#97a0b0',
+    DEFAULT_INPUT_BACKGROUND_OPACITY,
+  ),
+  MessageBackground: interpolateColor(
+    '#FAFAFA',
+    '#97a0b0',
+    DEFAULT_BACKGROUND_OPACITY,
+  ),
   GradientColors: ['#4796E4', '#847ACE', '#C3677F'],
 };
 
 export const darkTheme: ColorsTheme = {
   type: 'dark',
   Background: '#1E1E2E',
-  Foreground: '#CDD6F4',
+  Foreground: '',
   LightBlue: '#ADD8E6',
   AccentBlue: '#89B4FA',
   AccentPurple: '#CBA6F7',
@@ -110,13 +90,24 @@ export const darkTheme: ColorsTheme = {
   DiffRemoved: '#430000',
   Comment: '#6C7086',
   Gray: '#6C7086',
+  DarkGray: interpolateColor('#1E1E2E', '#6C7086', DEFAULT_BORDER_OPACITY),
+  InputBackground: interpolateColor(
+    '#1E1E2E',
+    '#6C7086',
+    DEFAULT_INPUT_BACKGROUND_OPACITY,
+  ),
+  MessageBackground: interpolateColor(
+    '#1E1E2E',
+    '#6C7086',
+    DEFAULT_BACKGROUND_OPACITY,
+  ),
   GradientColors: ['#4796E4', '#847ACE', '#C3677F'],
 };
 
 export const ansiTheme: ColorsTheme = {
   type: 'ansi',
   Background: 'black',
-  Foreground: 'white',
+  Foreground: '',
   LightBlue: 'blue',
   AccentBlue: 'blue',
   AccentPurple: 'magenta',
@@ -128,6 +119,9 @@ export const ansiTheme: ColorsTheme = {
   DiffRemoved: 'red',
   Comment: 'gray',
   Gray: 'gray',
+  DarkGray: 'gray',
+  InputBackground: 'black',
+  MessageBackground: 'black',
 };
 
 export class Theme {
@@ -161,21 +155,37 @@ export class Theme {
         secondary: this.colors.Gray,
         link: this.colors.AccentBlue,
         accent: this.colors.AccentPurple,
+        response: this.colors.Foreground,
       },
       background: {
         primary: this.colors.Background,
+        message:
+          this.colors.MessageBackground ??
+          interpolateColor(
+            this.colors.Background,
+            this.colors.Gray,
+            DEFAULT_BACKGROUND_OPACITY,
+          ),
+        input:
+          this.colors.InputBackground ??
+          interpolateColor(
+            this.colors.Background,
+            this.colors.Gray,
+            DEFAULT_INPUT_BACKGROUND_OPACITY,
+          ),
         diff: {
           added: this.colors.DiffAdded,
           removed: this.colors.DiffRemoved,
         },
       },
       border: {
-        default: this.colors.Gray,
+        default: this.colors.DarkGray,
         focused: this.colors.AccentBlue,
       },
       ui: {
-        comment: this.colors.Comment,
-        symbol: this.colors.Gray,
+        comment: this.colors.Gray,
+        symbol: this.colors.AccentCyan,
+        dark: this.colors.DarkGray,
         gradient: this.colors.GradientColors,
       },
       status: {
@@ -267,6 +277,23 @@ export function createCustomTheme(customTheme: CustomTheme): Theme {
       customTheme.background?.diff?.removed ?? customTheme.DiffRemoved ?? '',
     Comment: customTheme.ui?.comment ?? customTheme.Comment ?? '',
     Gray: customTheme.text?.secondary ?? customTheme.Gray ?? '',
+    DarkGray:
+      customTheme.DarkGray ??
+      interpolateColor(
+        customTheme.background?.primary ?? customTheme.Background ?? '',
+        customTheme.text?.secondary ?? customTheme.Gray ?? '',
+        DEFAULT_BORDER_OPACITY,
+      ),
+    InputBackground: interpolateColor(
+      customTheme.background?.primary ?? customTheme.Background ?? '',
+      customTheme.text?.secondary ?? customTheme.Gray ?? '',
+      DEFAULT_INPUT_BACKGROUND_OPACITY,
+    ),
+    MessageBackground: interpolateColor(
+      customTheme.background?.primary ?? customTheme.Background ?? '',
+      customTheme.text?.secondary ?? customTheme.Gray ?? '',
+      DEFAULT_BACKGROUND_OPACITY,
+    ),
     GradientColors: customTheme.ui?.gradient ?? customTheme.GradientColors,
   };
 
@@ -414,21 +441,28 @@ export function createCustomTheme(customTheme: CustomTheme): Theme {
       secondary: customTheme.text?.secondary ?? colors.Gray,
       link: customTheme.text?.link ?? colors.AccentBlue,
       accent: customTheme.text?.accent ?? colors.AccentPurple,
+      response:
+        customTheme.text?.response ??
+        customTheme.text?.primary ??
+        colors.Foreground,
     },
     background: {
       primary: customTheme.background?.primary ?? colors.Background,
+      message: colors.MessageBackground!,
+      input: colors.InputBackground!,
       diff: {
         added: customTheme.background?.diff?.added ?? colors.DiffAdded,
         removed: customTheme.background?.diff?.removed ?? colors.DiffRemoved,
       },
     },
     border: {
-      default: customTheme.border?.default ?? colors.Gray,
+      default: colors.DarkGray,
       focused: customTheme.border?.focused ?? colors.AccentBlue,
     },
     ui: {
       comment: customTheme.ui?.comment ?? colors.Comment,
       symbol: customTheme.ui?.symbol ?? colors.Gray,
+      dark: colors.DarkGray,
       gradient: customTheme.ui?.gradient ?? colors.GradientColors,
     },
     status: {
@@ -478,4 +512,41 @@ export function validateCustomTheme(customTheme: Partial<CustomTheme>): {
 function isValidThemeName(name: string): boolean {
   // Theme name should be non-empty and not contain invalid characters
   return name.trim().length > 0 && name.trim().length <= 50;
+}
+
+/**
+ * Picks a default theme name based on terminal background color.
+ * It first tries to find a theme with an exact background color match.
+ * If no match is found, it falls back to a light or dark theme based on the
+ * luminance of the background color.
+ * @param terminalBackground The hex color string of the terminal background.
+ * @param availableThemes A list of available themes to search through.
+ * @param defaultDarkThemeName The name of the fallback dark theme.
+ * @param defaultLightThemeName The name of the fallback light theme.
+ * @returns The name of the chosen theme.
+ */
+export function pickDefaultThemeName(
+  terminalBackground: string | undefined,
+  availableThemes: readonly Theme[],
+  defaultDarkThemeName: string,
+  defaultLightThemeName: string,
+): string {
+  if (terminalBackground) {
+    const lowerTerminalBackground = terminalBackground.toLowerCase();
+    for (const theme of availableThemes) {
+      if (!theme.colors.Background) continue;
+      // resolveColor can return undefined
+      const themeBg = resolveColor(theme.colors.Background)?.toLowerCase();
+      if (themeBg === lowerTerminalBackground) {
+        return theme.name;
+      }
+    }
+  }
+
+  const themeType = getThemeTypeFromBackgroundColor(terminalBackground);
+  if (themeType === 'light') {
+    return defaultLightThemeName;
+  }
+
+  return defaultDarkThemeName;
 }

@@ -23,6 +23,9 @@ const noColorColorsTheme: ColorsTheme = {
   DiffRemoved: '',
   Comment: '',
   Gray: '',
+  DarkGray: '',
+  InputBackground: '',
+  MessageBackground: '',
 };
 
 const noColorSemanticColors: SemanticColors = {
@@ -31,9 +34,12 @@ const noColorSemanticColors: SemanticColors = {
     secondary: '',
     link: '',
     accent: '',
+    response: '',
   },
   background: {
     primary: '',
+    message: '',
+    input: '',
     diff: {
       added: '',
       removed: '',
@@ -46,6 +52,7 @@ const noColorSemanticColors: SemanticColors = {
   ui: {
     comment: '',
     symbol: '',
+    dark: '',
     gradient: [],
   },
   status: {

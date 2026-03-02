@@ -5,14 +5,14 @@
  */
 
 import type { FileSystemService } from '@google/gemini-cli-core';
-import type * as acp from './acp.js';
+import type * as acp from '@agentclientprotocol/sdk';
 
 /**
  * ACP client-based implementation of FileSystemService
  */
 export class AcpFileSystemService implements FileSystemService {
   constructor(
-    private readonly client: acp.Client,
+    private readonly connection: acp.AgentSideConnection,
     private readonly sessionId: string,
     private readonly capabilities: acp.FileSystemCapability,
     private readonly fallback: FileSystemService,
@@ -23,13 +23,13 @@ export class AcpFileSystemService implements FileSystemService {
       return this.fallback.readTextFile(filePath);
     }
 
-    const response = await this.client.readTextFile({
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const response = await this.connection.readTextFile({
       path: filePath,
       sessionId: this.sessionId,
-      line: null,
-      limit: null,
     });
 
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-return
     return response.content;
   }
 
@@ -38,7 +38,7 @@ export class AcpFileSystemService implements FileSystemService {
       return this.fallback.writeTextFile(filePath, content);
     }
 
-    await this.client.writeTextFile({
+    await this.connection.writeTextFile({
       path: filePath,
       content,
       sessionId: this.sessionId,

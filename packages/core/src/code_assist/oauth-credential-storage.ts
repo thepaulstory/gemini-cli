@@ -9,24 +9,22 @@ import { HybridTokenStorage } from '../mcp/token-storage/hybrid-token-storage.js
 import { OAUTH_FILE } from '../config/storage.js';
 import type { OAuthCredentials } from '../mcp/token-storage/types.js';
 import * as path from 'node:path';
-import * as os from 'node:os';
 import { promises as fs } from 'node:fs';
+import { GEMINI_DIR, homedir } from '../utils/paths.js';
+import { coreEvents } from '../utils/events.js';
 
-const GEMINI_DIR = '.gemini';
 const KEYCHAIN_SERVICE_NAME = 'gemini-cli-oauth';
 const MAIN_ACCOUNT_KEY = 'main-account';
 
 export class OAuthCredentialStorage {
-  constructor(
-    private readonly storage: HybridTokenStorage = new HybridTokenStorage(
-      KEYCHAIN_SERVICE_NAME,
-    ),
-  ) {}
+  private static storage: HybridTokenStorage = new HybridTokenStorage(
+    KEYCHAIN_SERVICE_NAME,
+  );
 
   /**
    * Load cached OAuth credentials
    */
-  async loadCredentials(): Promise<Credentials | null> {
+  static async loadCredentials(): Promise<Credentials | null> {
     try {
       const credentials = await this.storage.getCredentials(MAIN_ACCOUNT_KEY);
 
@@ -51,15 +49,19 @@ export class OAuthCredentialStorage {
       // Fallback: Try to migrate from old file-based storage
       return await this.migrateFromFileStorage();
     } catch (error: unknown) {
-      console.error(error);
-      throw new Error('Failed to load OAuth credentials');
+      coreEvents.emitFeedback(
+        'error',
+        'Failed to load OAuth credentials',
+        error,
+      );
+      throw new Error('Failed to load OAuth credentials', { cause: error });
     }
   }
 
   /**
    * Save OAuth credentials
    */
-  async saveCredentials(credentials: Credentials): Promise<void> {
+  static async saveCredentials(credentials: Credentials): Promise<void> {
     if (!credentials.access_token) {
       throw new Error('Attempted to save credentials without an access token.');
     }
@@ -83,24 +85,28 @@ export class OAuthCredentialStorage {
   /**
    * Clear cached OAuth credentials
    */
-  async clearCredentials(): Promise<void> {
+  static async clearCredentials(): Promise<void> {
     try {
       await this.storage.deleteCredentials(MAIN_ACCOUNT_KEY);
 
       // Also try to remove the old file if it exists
-      const oldFilePath = path.join(os.homedir(), GEMINI_DIR, OAUTH_FILE);
+      const oldFilePath = path.join(homedir(), GEMINI_DIR, OAUTH_FILE);
       await fs.rm(oldFilePath, { force: true }).catch(() => {});
     } catch (error: unknown) {
-      console.error(error);
-      throw new Error('Failed to clear OAuth credentials');
+      coreEvents.emitFeedback(
+        'error',
+        'Failed to clear OAuth credentials',
+        error,
+      );
+      throw new Error('Failed to clear OAuth credentials', { cause: error });
     }
   }
 
   /**
    * Migrate credentials from old file-based storage to keychain
    */
-  private async migrateFromFileStorage(): Promise<Credentials | null> {
-    const oldFilePath = path.join(os.homedir(), GEMINI_DIR, OAUTH_FILE);
+  private static async migrateFromFileStorage(): Promise<Credentials | null> {
+    const oldFilePath = path.join(homedir(), GEMINI_DIR, OAUTH_FILE);
 
     let credsJson: string;
     try {
@@ -119,7 +125,8 @@ export class OAuthCredentialStorage {
       throw error;
     }
 
-    const credentials = JSON.parse(credsJson) as Credentials;
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
+    const credentials: Credentials = JSON.parse(credsJson);
 
     // Save to new storage
     await this.saveCredentials(credentials);

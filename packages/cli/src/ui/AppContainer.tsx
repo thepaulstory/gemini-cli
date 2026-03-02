@@ -1,11 +1,25 @@
 /**
  * @license
- * Copyright 2025 Google LLC
+ * Copyright 2026 Google LLC
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useMemo, useState, useCallback, useEffect, useRef } from 'react';
-import { type DOMElement, measureElement } from 'ink';
+import {
+  useMemo,
+  useState,
+  useCallback,
+  useEffect,
+  useRef,
+  useLayoutEffect,
+} from 'react';
+import {
+  type DOMElement,
+  measureElement,
+  useApp,
+  useStdout,
+  useStdin,
+  type AppProps,
+} from 'ink';
 import { App } from './App.js';
 import { AppContext } from './contexts/AppContext.js';
 import { UIStateContext, type UIState } from './contexts/UIStateContext.js';
@@ -16,91 +30,209 @@ import {
 import { ConfigContext } from './contexts/ConfigContext.js';
 import {
   type HistoryItem,
-  ToolCallStatus,
   type HistoryItemWithoutId,
+  type HistoryItemToolGroup,
   AuthState,
+  type ConfirmationRequest,
+  type PermissionConfirmationRequest,
+  type QuotaStats,
 } from './types.js';
+import { checkPermissions } from './hooks/atCommandProcessor.js';
 import { MessageType, StreamingState } from './types.js';
+import { ToolActionsProvider } from './contexts/ToolActionsContext.js';
 import {
+  type StartupWarning,
   type EditorType,
   type Config,
-  type DetectedIde,
+  type IdeInfo,
   type IdeContext,
   type UserTierId,
-  DEFAULT_GEMINI_FLASH_MODEL,
+  type GeminiUserTier,
+  type UserFeedbackPayload,
+  type AgentDefinition,
+  type ApprovalMode,
   IdeClient,
-  ideContext,
+  ideContextStore,
   getErrorMessage,
   getAllGeminiMdFilenames,
   AuthType,
   clearCachedCredentialFile,
+  type ResumedSessionData,
+  recordExitFail,
+  ShellExecutionService,
+  saveApiKey,
+  debugLogger,
+  coreEvents,
+  CoreEvent,
+  refreshServerHierarchicalMemory,
+  flattenMemory,
+  type MemoryChangedPayload,
+  writeToStdout,
+  disableMouseEvents,
+  enterAlternateScreen,
+  enableMouseEvents,
+  disableLineWrapping,
+  shouldEnterAlternateScreen,
+  startupProfiler,
+  SessionStartSource,
+  SessionEndReason,
+  generateSummary,
+  type ConsentRequestPayload,
+  type AgentsDiscoveredPayload,
+  ChangeAuthRequestedError,
+  CoreToolCallStatus,
+  generateSteeringAckMessage,
+  buildUserSteeringHintPrompt,
+  logBillingEvent,
+  ApiKeyUpdatedEvent,
 } from '@google/gemini-cli-core';
 import { validateAuthMethod } from '../config/auth.js';
-import { loadHierarchicalGeminiMemory } from '../config/config.js';
 import process from 'node:process';
 import { useHistory } from './hooks/useHistoryManager.js';
+import { useMemoryMonitor } from './hooks/useMemoryMonitor.js';
 import { useThemeCommand } from './hooks/useThemeCommand.js';
 import { useAuthCommand } from './auth/useAuth.js';
 import { useQuotaAndFallback } from './hooks/useQuotaAndFallback.js';
 import { useEditorSettings } from './hooks/useEditorSettings.js';
 import { useSettingsCommand } from './hooks/useSettingsCommand.js';
+import { useModelCommand } from './hooks/useModelCommand.js';
 import { useSlashCommandProcessor } from './hooks/slashCommandProcessor.js';
 import { useVimMode } from './contexts/VimModeContext.js';
+import {
+  useOverflowActions,
+  useOverflowState,
+} from './contexts/OverflowContext.js';
 import { useConsoleMessages } from './hooks/useConsoleMessages.js';
 import { useTerminalSize } from './hooks/useTerminalSize.js';
-import { useStdin, useStdout } from 'ink';
+import { calculatePromptWidths } from './components/InputPrompt.js';
+import { calculateMainAreaWidth } from './utils/ui-sizing.js';
 import ansiEscapes from 'ansi-escapes';
-import * as fs from 'node:fs';
+import { basename } from 'node:path';
+import { computeTerminalTitle } from '../utils/windowTitle.js';
 import { useTextBuffer } from './components/shared/text-buffer.js';
 import { useLogger } from './hooks/useLogger.js';
 import { useGeminiStream } from './hooks/useGeminiStream.js';
+import { type BackgroundShell } from './hooks/shellCommandProcessor.js';
 import { useVim } from './hooks/vim.js';
-import { type LoadedSettings, SettingScope } from '../config/settings.js';
+import { type LoadableSettingScope, SettingScope } from '../config/settings.js';
 import { type InitializationResult } from '../core/initializer.js';
 import { useFocus } from './hooks/useFocus.js';
-import { useBracketedPaste } from './hooks/useBracketedPaste.js';
 import { useKeypress, type Key } from './hooks/useKeypress.js';
+import { KeypressPriority } from './contexts/KeypressContext.js';
 import { keyMatchers, Command } from './keyMatchers.js';
 import { useLoadingIndicator } from './hooks/useLoadingIndicator.js';
+import { useShellInactivityStatus } from './hooks/useShellInactivityStatus.js';
 import { useFolderTrust } from './hooks/useFolderTrust.js';
 import { useIdeTrustListener } from './hooks/useIdeTrustListener.js';
 import { type IdeIntegrationNudgeResult } from './IdeIntegrationNudge.js';
-import { appEvents, AppEvent } from '../utils/events.js';
+import { appEvents, AppEvent, TransientMessageType } from '../utils/events.js';
 import { type UpdateObject } from './utils/updateCheck.js';
 import { setUpdateHandler } from '../utils/handleAutoUpdate.js';
-import { ConsolePatcher } from './utils/ConsolePatcher.js';
 import { registerCleanup, runExitCleanup } from '../utils/cleanup.js';
+import { RELAUNCH_EXIT_CODE } from '../utils/processUtils.js';
+import type { SessionInfo } from '../utils/sessionUtils.js';
 import { useMessageQueue } from './hooks/useMessageQueue.js';
-import { useAutoAcceptIndicator } from './hooks/useAutoAcceptIndicator.js';
-import { useWorkspaceMigration } from './hooks/useWorkspaceMigration.js';
+import { useMcpStatus } from './hooks/useMcpStatus.js';
+import { useApprovalModeIndicator } from './hooks/useApprovalModeIndicator.js';
 import { useSessionStats } from './contexts/SessionContext.js';
 import { useGitBranchName } from './hooks/useGitBranchName.js';
-
-const CTRL_EXIT_PROMPT_DURATION_MS = 1000;
+import {
+  useConfirmUpdateRequests,
+  useExtensionUpdates,
+} from './hooks/useExtensionUpdates.js';
+import { ShellFocusContext } from './contexts/ShellFocusContext.js';
+import { type ExtensionManager } from '../config/extension-manager.js';
+import { requestConsentInteractive } from '../config/extensions/consent.js';
+import { useSessionBrowser } from './hooks/useSessionBrowser.js';
+import { useSessionResume } from './hooks/useSessionResume.js';
+import { useIncludeDirsTrust } from './hooks/useIncludeDirsTrust.js';
+import { useSessionRetentionCheck } from './hooks/useSessionRetentionCheck.js';
+import { isWorkspaceTrusted } from '../config/trustedFolders.js';
+import { useSettings } from './contexts/SettingsContext.js';
+import { terminalCapabilityManager } from './utils/terminalCapabilityManager.js';
+import { useInputHistoryStore } from './hooks/useInputHistoryStore.js';
+import { useBanner } from './hooks/useBanner.js';
+import { useTerminalSetupPrompt } from './utils/terminalSetup.js';
+import { useHookDisplayState } from './hooks/useHookDisplayState.js';
+import { useBackgroundShellManager } from './hooks/useBackgroundShellManager.js';
+import {
+  WARNING_PROMPT_DURATION_MS,
+  QUEUE_ERROR_DISPLAY_DURATION_MS,
+  EXPAND_HINT_DURATION_MS,
+} from './constants.js';
+import { LoginWithGoogleRestartDialog } from './auth/LoginWithGoogleRestartDialog.js';
+import { NewAgentsChoice } from './components/NewAgentsNotification.js';
+import { isSlashCommand } from './utils/commandUtils.js';
+import { useTerminalTheme } from './hooks/useTerminalTheme.js';
+import { useTimedMessage } from './hooks/useTimedMessage.js';
+import { shouldDismissShortcutsHelpOnHotkey } from './utils/shortcutsHelp.js';
+import { useSuspend } from './hooks/useSuspend.js';
+import { useRunEventNotifications } from './hooks/useRunEventNotifications.js';
+import { isNotificationsEnabled } from '../utils/terminalNotifications.js';
 
 function isToolExecuting(pendingHistoryItems: HistoryItemWithoutId[]) {
   return pendingHistoryItems.some((item) => {
     if (item && item.type === 'tool_group') {
       return item.tools.some(
-        (tool) => ToolCallStatus.Executing === tool.status,
+        (tool) => CoreToolCallStatus.Executing === tool.status,
       );
     }
     return false;
   });
 }
 
-interface AppContainerProps {
-  config: Config;
-  settings: LoadedSettings;
-  startupWarnings?: string[];
-  version: string;
-  initializationResult: InitializationResult;
+function isToolAwaitingConfirmation(
+  pendingHistoryItems: HistoryItemWithoutId[],
+) {
+  return pendingHistoryItems
+    .filter((item): item is HistoryItemToolGroup => item.type === 'tool_group')
+    .some((item) =>
+      item.tools.some(
+        (tool) => CoreToolCallStatus.AwaitingApproval === tool.status,
+      ),
+    );
 }
 
+interface AppContainerProps {
+  config: Config;
+  startupWarnings?: StartupWarning[];
+  version: string;
+  initializationResult: InitializationResult;
+  resumedSessionData?: ResumedSessionData;
+}
+
+import { useRepeatedKeyPress } from './hooks/useRepeatedKeyPress.js';
+import {
+  useVisibilityToggle,
+  APPROVAL_MODE_REVEAL_DURATION_MS,
+} from './hooks/useVisibilityToggle.js';
+
+/**
+ * The fraction of the terminal width to allocate to the shell.
+ * This provides horizontal padding.
+ */
+const SHELL_WIDTH_FRACTION = 0.89;
+
+/**
+ * The number of lines to subtract from the available terminal height
+ * for the shell. This provides vertical padding and space for other UI elements.
+ */
+const SHELL_HEIGHT_PADDING = 10;
+
 export const AppContainer = (props: AppContainerProps) => {
-  const { settings, config, initializationResult } = props;
-  const historyManager = useHistory();
+  const { config, initializationResult, resumedSessionData } = props;
+  const settings = useSettings();
+  const { reset } = useOverflowActions()!;
+  const notificationsEnabled = isNotificationsEnabled(settings);
+
+  const historyManager = useHistory({
+    chatRecordingService: config.getGeminiClient()?.getChatRecordingService(),
+  });
+
+  useMemoryMonitor(historyManager);
+  const isAlternateBuffer = config.getUseAlternateBuffer();
   const [corgiMode, setCorgiMode] = useState(false);
+  const [forceRerenderKey, setForceRerenderKey] = useState(0);
   const [debugMessage, setDebugMessage] = useState<string>('');
   const [quittingMessages, setQuittingMessages] = useState<
     HistoryItem[] | null
@@ -110,45 +242,173 @@ export const AppContainer = (props: AppContainerProps) => {
     initializationResult.themeError,
   );
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
-  const [geminiMdFileCount, setGeminiMdFileCount] = useState<number>(
-    initializationResult.geminiMdFileCount,
+  const [embeddedShellFocused, setEmbeddedShellFocused] = useState(false);
+  const [showDebugProfiler, setShowDebugProfiler] = useState(false);
+  const [customDialog, setCustomDialog] = useState<React.ReactNode | null>(
+    null,
   );
+  const [copyModeEnabled, setCopyModeEnabled] = useState(false);
+  const [pendingRestorePrompt, setPendingRestorePrompt] = useState(false);
+  const toggleBackgroundShellRef = useRef<() => void>(() => {});
+  const isBackgroundShellVisibleRef = useRef<boolean>(false);
+  const backgroundShellsRef = useRef<Map<number, BackgroundShell>>(new Map());
+
+  const [adminSettingsChanged, setAdminSettingsChanged] = useState(false);
+
   const [shellModeActive, setShellModeActive] = useState(false);
   const [modelSwitchedFromQuotaError, setModelSwitchedFromQuotaError] =
     useState<boolean>(false);
   const [historyRemountKey, setHistoryRemountKey] = useState(0);
+  const [settingsNonce, setSettingsNonce] = useState(0);
+  const activeHooks = useHookDisplayState();
   const [updateInfo, setUpdateInfo] = useState<UpdateObject | null>(null);
   const [isTrustedFolder, setIsTrustedFolder] = useState<boolean | undefined>(
-    config.isTrustedFolder(),
+    () => isWorkspaceTrusted(settings.merged).isTrusted,
   );
 
-  // Helper to determine the effective model, considering the fallback state.
-  const getEffectiveModel = useCallback(() => {
-    if (config.isInFallbackMode()) {
-      return DEFAULT_GEMINI_FLASH_MODEL;
-    }
-    return config.getModel();
-  }, [config]);
+  const [queueErrorMessage, setQueueErrorMessage] = useTimedMessage<string>(
+    QUEUE_ERROR_DISPLAY_DURATION_MS,
+  );
 
-  const [currentModel, setCurrentModel] = useState(getEffectiveModel());
+  const [newAgents, setNewAgents] = useState<AgentDefinition[] | null>(null);
+  const [constrainHeight, setConstrainHeight] = useState<boolean>(true);
+  const [expandHintTrigger, triggerExpandHint] = useTimedMessage<boolean>(
+    EXPAND_HINT_DURATION_MS,
+  );
+  const showIsExpandableHint = Boolean(expandHintTrigger);
+  const overflowState = useOverflowState();
+  const overflowingIdsSize = overflowState?.overflowingIds.size ?? 0;
+  const hasOverflowState = overflowingIdsSize > 0 || !constrainHeight;
+
+  /**
+   * Manages the visibility and x-second timer for the expansion hint.
+   *
+   * This effect triggers the timer countdown whenever an overflow is detected
+   * or the user manually toggles the expansion state with Ctrl+O. We use a stable
+   * boolean dependency (hasOverflowState) to ensure the timer only resets on
+   * genuine state transitions, preventing it from infinitely resetting during
+   * active text streaming.
+   *
+   * In alternate buffer mode, we don't trigger the hint automatically on overflow
+   * to avoid noise, but the user can still trigger it manually with Ctrl+O.
+   */
+  useEffect(() => {
+    if (hasOverflowState && !isAlternateBuffer) {
+      triggerExpandHint(true);
+    }
+  }, [hasOverflowState, isAlternateBuffer, triggerExpandHint]);
+
+  const [defaultBannerText, setDefaultBannerText] = useState('');
+  const [warningBannerText, setWarningBannerText] = useState('');
+  const [bannerVisible, setBannerVisible] = useState(true);
+
+  const bannerData = useMemo(
+    () => ({
+      defaultText: defaultBannerText,
+      warningText: warningBannerText,
+    }),
+    [defaultBannerText, warningBannerText],
+  );
+
+  const { bannerText } = useBanner(bannerData);
+
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+  const extensionManager = config.getExtensionLoader() as ExtensionManager;
+  // We are in the interactive CLI, update how we request consent and settings.
+  extensionManager.setRequestConsent((description) =>
+    requestConsentInteractive(description, addConfirmUpdateExtensionRequest),
+  );
+  extensionManager.setRequestSetting();
+
+  const { addConfirmUpdateExtensionRequest, confirmUpdateExtensionRequests } =
+    useConfirmUpdateRequests();
+  const {
+    extensionsUpdateState,
+    extensionsUpdateStateInternal,
+    dispatchExtensionStateUpdate,
+  } = useExtensionUpdates(
+    extensionManager,
+    historyManager.addItem,
+    config.getEnableExtensionReloading(),
+  );
+
+  const [isPermissionsDialogOpen, setPermissionsDialogOpen] = useState(false);
+  const [permissionsDialogProps, setPermissionsDialogProps] = useState<{
+    targetDirectory?: string;
+  } | null>(null);
+  const openPermissionsDialog = useCallback(
+    (props?: { targetDirectory?: string }) => {
+      setPermissionsDialogOpen(true);
+      setPermissionsDialogProps(props ?? null);
+    },
+    [],
+  );
+  const closePermissionsDialog = useCallback(() => {
+    setPermissionsDialogOpen(false);
+    setPermissionsDialogProps(null);
+  }, []);
+
+  const [isAgentConfigDialogOpen, setIsAgentConfigDialogOpen] = useState(false);
+  const [selectedAgentName, setSelectedAgentName] = useState<
+    string | undefined
+  >();
+  const [selectedAgentDisplayName, setSelectedAgentDisplayName] = useState<
+    string | undefined
+  >();
+  const [selectedAgentDefinition, setSelectedAgentDefinition] = useState<
+    AgentDefinition | undefined
+  >();
+
+  const openAgentConfigDialog = useCallback(
+    (name: string, displayName: string, definition: AgentDefinition) => {
+      setSelectedAgentName(name);
+      setSelectedAgentDisplayName(displayName);
+      setSelectedAgentDefinition(definition);
+      setIsAgentConfigDialogOpen(true);
+    },
+    [],
+  );
+
+  const closeAgentConfigDialog = useCallback(() => {
+    setIsAgentConfigDialogOpen(false);
+    setSelectedAgentName(undefined);
+    setSelectedAgentDisplayName(undefined);
+    setSelectedAgentDefinition(undefined);
+  }, []);
+
+  const toggleDebugProfiler = useCallback(
+    () => setShowDebugProfiler((prev) => !prev),
+    [],
+  );
+
+  const [currentModel, setCurrentModel] = useState(config.getModel());
 
   const [userTier, setUserTier] = useState<UserTierId | undefined>(undefined);
+  const [quotaStats, setQuotaStats] = useState<QuotaStats | undefined>(() => {
+    const remaining = config.getQuotaRemaining();
+    const limit = config.getQuotaLimit();
+    const resetTime = config.getQuotaResetTime();
+    return remaining !== undefined ||
+      limit !== undefined ||
+      resetTime !== undefined
+      ? { remaining, limit, resetTime }
+      : undefined;
+  });
+  const [paidTier, setPaidTier] = useState<GeminiUserTier | undefined>(
+    undefined,
+  );
 
   const [isConfigInitialized, setConfigInitialized] = useState(false);
 
-  // Auto-accept indicator
-  const showAutoAcceptIndicator = useAutoAcceptIndicator({
-    config,
-    addItem: historyManager.addItem,
-  });
-
   const logger = useLogger(config.storage);
-  const [userMessages, setUserMessages] = useState<string[]>([]);
+  const { inputHistory, addInput, initializeFromLogger } =
+    useInputHistoryStore();
 
   // Terminal and layout hooks
   const { columns: terminalWidth, rows: terminalHeight } = useTerminalSize();
   const { stdin, setRawMode } = useStdin();
   const { stdout } = useStdout();
+  const app: AppProps = useApp();
 
   // Additional hooks moved from App.tsx
   const { stats: sessionStats } = useSessionStats();
@@ -156,120 +416,247 @@ export const AppContainer = (props: AppContainerProps) => {
 
   // Layout measurements
   const mainControlsRef = useRef<DOMElement>(null);
+  // For performance profiling only
+  const rootUiRef = useRef<DOMElement>(null);
+  const lastTitleRef = useRef<string | null>(null);
   const staticExtraHeight = 3;
 
   useEffect(() => {
+    // eslint-disable-next-line @typescript-eslint/no-floating-promises
     (async () => {
       // Note: the program will not work if this fails so let errors be
       // handled by the global catch.
-      await config.initialize();
+      if (!config.isInitialized()) {
+        await config.initialize();
+      }
       setConfigInitialized(true);
+      startupProfiler.flush(config);
+
+      const sessionStartSource = resumedSessionData
+        ? SessionStartSource.Resume
+        : SessionStartSource.Startup;
+      const result = await config
+        .getHookSystem()
+        ?.fireSessionStartEvent(sessionStartSource);
+
+      if (result) {
+        if (result.systemMessage) {
+          historyManager.addItem(
+            {
+              type: MessageType.INFO,
+              text: result.systemMessage,
+            },
+            Date.now(),
+          );
+        }
+
+        const additionalContext = result.getAdditionalContext();
+        const geminiClient = config.getGeminiClient();
+        if (additionalContext && geminiClient) {
+          await geminiClient.addHistory({
+            role: 'user',
+            parts: [
+              { text: `<hook_context>${additionalContext}</hook_context>` },
+            ],
+          });
+        }
+      }
+
+      // Fire-and-forget: generate summary for previous session in background
+      generateSummary(config).catch((e) => {
+        debugLogger.warn('Background summary generation failed:', e);
+      });
     })();
     registerCleanup(async () => {
+      // Turn off mouse scroll.
+      disableMouseEvents();
+
+      // Kill all background shells
+      for (const pid of backgroundShellsRef.current.keys()) {
+        ShellExecutionService.kill(pid);
+      }
+
       const ideClient = await IdeClient.getInstance();
       await ideClient.disconnect();
+
+      // Fire SessionEnd hook on cleanup (only if hooks are enabled)
+      await config?.getHookSystem()?.fireSessionEndEvent(SessionEndReason.Exit);
     });
-  }, [config]);
+    // Disable the dependencies check here. historyManager gets flagged
+    // but we don't want to react to changes to it because each new history
+    // item, including the ones from the start session hook will cause a
+    // re-render and an error when we try to reload config.
+    //
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [config, resumedSessionData]);
 
   useEffect(
     () => setUpdateHandler(historyManager.addItem, setUpdateInfo),
     [historyManager.addItem],
   );
 
-  // Watch for model changes (e.g., from Flash fallback)
+  // Subscribe to fallback mode and model changes from core
   useEffect(() => {
-    const checkModelChange = () => {
-      const effectiveModel = getEffectiveModel();
-      if (effectiveModel !== currentModel) {
-        setCurrentModel(effectiveModel);
-      }
+    const handleModelChanged = () => {
+      setCurrentModel(config.getModel());
     };
 
-    checkModelChange();
-    const interval = setInterval(checkModelChange, 1000); // Check every second
+    const handleQuotaChanged = (payload: {
+      remaining: number | undefined;
+      limit: number | undefined;
+      resetTime?: string;
+    }) => {
+      setQuotaStats({
+        remaining: payload.remaining,
+        limit: payload.limit,
+        resetTime: payload.resetTime,
+      });
+    };
 
-    return () => clearInterval(interval);
-  }, [config, currentModel, getEffectiveModel]);
-
-  const {
-    consoleMessages,
-    handleNewMessage,
-    clearConsoleMessages: clearConsoleMessagesState,
-  } = useConsoleMessages();
+    coreEvents.on(CoreEvent.ModelChanged, handleModelChanged);
+    coreEvents.on(CoreEvent.QuotaChanged, handleQuotaChanged);
+    return () => {
+      coreEvents.off(CoreEvent.ModelChanged, handleModelChanged);
+      coreEvents.off(CoreEvent.QuotaChanged, handleQuotaChanged);
+    };
+  }, [config]);
 
   useEffect(() => {
-    const consolePatcher = new ConsolePatcher({
-      onNewMessage: handleNewMessage,
-      debugMode: config.getDebugMode(),
-    });
-    consolePatcher.patch();
-    registerCleanup(consolePatcher.cleanup);
-  }, [handleNewMessage, config]);
+    const handleSettingsChanged = () => {
+      setSettingsNonce((prev) => prev + 1);
+    };
 
-  const widthFraction = 0.9;
-  const inputWidth = Math.max(
-    20,
-    Math.floor(terminalWidth * widthFraction) - 3,
-  );
-  const suggestionsWidth = Math.max(20, Math.floor(terminalWidth * 1.0));
-  const mainAreaWidth = Math.floor(terminalWidth * 0.9);
+    const handleAdminSettingsChanged = () => {
+      setAdminSettingsChanged(true);
+    };
+
+    const handleAgentsDiscovered = (payload: AgentsDiscoveredPayload) => {
+      setNewAgents(payload.agents);
+    };
+
+    coreEvents.on(CoreEvent.SettingsChanged, handleSettingsChanged);
+    coreEvents.on(CoreEvent.AdminSettingsChanged, handleAdminSettingsChanged);
+    coreEvents.on(CoreEvent.AgentsDiscovered, handleAgentsDiscovered);
+    return () => {
+      coreEvents.off(CoreEvent.SettingsChanged, handleSettingsChanged);
+      coreEvents.off(
+        CoreEvent.AdminSettingsChanged,
+        handleAdminSettingsChanged,
+      );
+      coreEvents.off(CoreEvent.AgentsDiscovered, handleAgentsDiscovered);
+    };
+  }, [settings]);
+
+  const { consoleMessages, clearConsoleMessages: clearConsoleMessagesState } =
+    useConsoleMessages();
+
+  const mainAreaWidth = calculateMainAreaWidth(terminalWidth, config);
+  // Derive widths for InputPrompt using shared helper
+  const { inputWidth, suggestionsWidth } = useMemo(() => {
+    const { inputWidth, suggestionsWidth } =
+      calculatePromptWidths(mainAreaWidth);
+    return { inputWidth, suggestionsWidth };
+  }, [mainAreaWidth]);
+
   const staticAreaMaxItemHeight = Math.max(terminalHeight * 4, 100);
 
-  const isValidPath = useCallback((filePath: string): boolean => {
-    try {
-      return fs.existsSync(filePath) && fs.statSync(filePath).isFile();
-    } catch (_e) {
-      return false;
-    }
-  }, []);
+  const getPreferredEditor = useCallback(
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+    () => settings.merged.general.preferredEditor as EditorType,
+    [settings.merged.general.preferredEditor],
+  );
 
   const buffer = useTextBuffer({
     initialText: '',
     viewport: { height: 10, width: inputWidth },
     stdin,
     setRawMode,
-    isValidPath,
+    escapePastedPaths: true,
     shellModeActive,
+    getPreferredEditor,
+  });
+  const bufferRef = useRef(buffer);
+  useEffect(() => {
+    bufferRef.current = buffer;
+  }, [buffer]);
+
+  const stableSetText = useCallback((text: string) => {
+    bufferRef.current.setText(text);
+  }, []);
+
+  // Initialize input history from logger (past sessions)
+  useEffect(() => {
+    // eslint-disable-next-line @typescript-eslint/no-floating-promises
+    initializeFromLogger(logger);
+  }, [logger, initializeFromLogger]);
+
+  // One-time prompt to suggest running /terminal-setup when it would help.
+  useTerminalSetupPrompt({
+    addConfirmUpdateExtensionRequest,
+    addItem: historyManager.addItem,
   });
 
-  useEffect(() => {
-    const fetchUserMessages = async () => {
-      const pastMessagesRaw = (await logger?.getPreviousUserMessages()) || [];
-      const currentSessionUserMessages = historyManager.history
-        .filter(
-          (item): item is HistoryItem & { type: 'user'; text: string } =>
-            item.type === 'user' &&
-            typeof item.text === 'string' &&
-            item.text.trim() !== '',
-        )
-        .map((item) => item.text)
-        .reverse();
-      const combinedMessages = [
-        ...currentSessionUserMessages,
-        ...pastMessagesRaw,
-      ];
-      const deduplicatedMessages: string[] = [];
-      if (combinedMessages.length > 0) {
-        deduplicatedMessages.push(combinedMessages[0]);
-        for (let i = 1; i < combinedMessages.length; i++) {
-          if (combinedMessages[i] !== combinedMessages[i - 1]) {
-            deduplicatedMessages.push(combinedMessages[i]);
-          }
-        }
-      }
-      setUserMessages(deduplicatedMessages.reverse());
-    };
-    fetchUserMessages();
-  }, [historyManager.history, logger]);
-
   const refreshStatic = useCallback(() => {
-    stdout.write(ansiEscapes.clearTerminal);
+    if (!isAlternateBuffer) {
+      stdout.write(ansiEscapes.clearTerminal);
+    }
     setHistoryRemountKey((prev) => prev + 1);
-  }, [setHistoryRemountKey, stdout]);
+  }, [setHistoryRemountKey, isAlternateBuffer, stdout]);
+
+  const shouldUseAlternateScreen = shouldEnterAlternateScreen(
+    isAlternateBuffer,
+    config.getScreenReader(),
+  );
+
+  const handleEditorClose = useCallback(() => {
+    if (shouldUseAlternateScreen) {
+      // The editor may have exited alternate buffer mode so we need to
+      // enter it again to be safe.
+      enterAlternateScreen();
+      enableMouseEvents();
+      disableLineWrapping();
+      app.rerender();
+    }
+    terminalCapabilityManager.enableSupportedModes();
+    refreshStatic();
+  }, [refreshStatic, shouldUseAlternateScreen, app]);
+
+  const [editorError, setEditorError] = useState<string | null>(null);
+  const {
+    isEditorDialogOpen,
+    openEditorDialog,
+    handleEditorSelect,
+    exitEditorDialog,
+  } = useEditorSettings(settings, setEditorError, historyManager.addItem);
+
+  useEffect(() => {
+    coreEvents.on(CoreEvent.ExternalEditorClosed, handleEditorClose);
+    coreEvents.on(CoreEvent.RequestEditorSelection, openEditorDialog);
+    return () => {
+      coreEvents.off(CoreEvent.ExternalEditorClosed, handleEditorClose);
+      coreEvents.off(CoreEvent.RequestEditorSelection, openEditorDialog);
+    };
+  }, [handleEditorClose, openEditorDialog]);
+
+  useEffect(() => {
+    if (
+      !(settings.merged.ui.hideBanner || config.getScreenReader()) &&
+      bannerVisible &&
+      bannerText
+    ) {
+      // The header should show a banner but the Header is rendered in static
+      // so we must trigger a static refresh for it to be visible.
+      refreshStatic();
+    }
+  }, [bannerVisible, bannerText, settings, config, refreshStatic]);
+
+  const { isSettingsDialogOpen, openSettingsDialog, closeSettingsDialog } =
+    useSettingsCommand();
 
   const {
     isThemeDialogOpen,
     openThemeDialog,
+    closeThemeDialog,
     handleThemeSelect,
     handleThemeHighlight,
   } = useThemeCommand(
@@ -277,36 +664,114 @@ export const AppContainer = (props: AppContainerProps) => {
     setThemeError,
     historyManager.addItem,
     initializationResult.themeError,
+    refreshStatic,
   );
-
-  const { authState, setAuthState, authError, onAuthError } = useAuthCommand(
+  // Poll for terminal background color changes to auto-switch theme
+  useTerminalTheme(handleThemeSelect, config, refreshStatic);
+  const {
+    authState,
+    setAuthState,
+    authError,
+    onAuthError,
+    apiKeyDefaultValue,
+    reloadApiKey,
+    accountSuspensionInfo,
+    setAccountSuspensionInfo,
+  } = useAuthCommand(
     settings,
     config,
+    initializationResult.authError,
+    initializationResult.accountSuspensionInfo,
+  );
+  const [authContext, setAuthContext] = useState<{ requiresRestart?: boolean }>(
+    {},
   );
 
-  const { proQuotaRequest, handleProQuotaChoice } = useQuotaAndFallback({
+  useEffect(() => {
+    if (authState === AuthState.Authenticated && authContext.requiresRestart) {
+      setAuthState(AuthState.AwaitingGoogleLoginRestart);
+      setAuthContext({});
+    }
+  }, [authState, authContext, setAuthState]);
+
+  const {
+    proQuotaRequest,
+    handleProQuotaChoice,
+    validationRequest,
+    handleValidationChoice,
+    // G1 AI Credits
+    overageMenuRequest,
+    handleOverageMenuChoice,
+    emptyWalletRequest,
+    handleEmptyWalletChoice,
+  } = useQuotaAndFallback({
     config,
     historyManager,
     userTier,
-    setAuthState,
+    paidTier,
+    settings,
     setModelSwitchedFromQuotaError,
+    onShowAuthSelection: () => setAuthState(AuthState.Updating),
+    errorVerbosity: settings.merged.ui.errorVerbosity,
   });
 
   // Derive auth state variables for backward compatibility with UIStateContext
   const isAuthDialogOpen = authState === AuthState.Updating;
   const isAuthenticating = authState === AuthState.Unauthenticated;
 
+  // Session browser and resume functionality
+  const isGeminiClientInitialized = config.getGeminiClient()?.isInitialized();
+
+  const { loadHistoryForResume, isResuming } = useSessionResume({
+    config,
+    historyManager,
+    refreshStatic,
+    isGeminiClientInitialized,
+    setQuittingMessages,
+    resumedSessionData,
+    isAuthenticating,
+  });
+  const {
+    isSessionBrowserOpen,
+    openSessionBrowser,
+    closeSessionBrowser,
+    handleResumeSession,
+    handleDeleteSession: handleDeleteSessionSync,
+  } = useSessionBrowser(config, loadHistoryForResume);
+  // Wrap handleDeleteSession to return a Promise for UIActions interface
+  const handleDeleteSession = useCallback(
+    async (session: SessionInfo): Promise<void> => {
+      handleDeleteSessionSync(session);
+    },
+    [handleDeleteSessionSync],
+  );
+
   // Create handleAuthSelect wrapper for backward compatibility
   const handleAuthSelect = useCallback(
-    async (authType: AuthType | undefined, scope: SettingScope) => {
+    async (authType: AuthType | undefined, scope: LoadableSettingScope) => {
       if (authType) {
+        const previousAuthType =
+          config.getContentGeneratorConfig()?.authType ?? 'unknown';
+        if (authType === AuthType.LOGIN_WITH_GOOGLE) {
+          setAuthContext({ requiresRestart: true });
+        } else {
+          setAuthContext({});
+        }
         await clearCachedCredentialFile();
         settings.setValue(scope, 'security.auth.selectedType', authType);
 
         try {
+          config.setRemoteAdminSettings(undefined);
           await config.refreshAuth(authType);
           setAuthState(AuthState.Authenticated);
+          logBillingEvent(
+            config,
+            new ApiKeyUpdatedEvent(previousAuthType, authType),
+          );
         } catch (e) {
+          if (e instanceof ChangeAuthRequestedError) {
+            return;
+          }
           onAuthError(
             `Failed to authenticate: ${e instanceof Error ? e.message : String(e)}`,
           );
@@ -318,42 +783,79 @@ export const AppContainer = (props: AppContainerProps) => {
           config.isBrowserLaunchSuppressed()
         ) {
           await runExitCleanup();
-          console.log(`
+          writeToStdout(`
 ----------------------------------------------------------------
-Logging in with Google... Please restart Gemini CLI to continue.
+Logging in with Google... Restarting Gemini CLI to continue.
 ----------------------------------------------------------------
           `);
-          process.exit(0);
+          process.exit(RELAUNCH_EXIT_CODE);
         }
       }
       setAuthState(AuthState.Authenticated);
     },
-    [settings, config, setAuthState, onAuthError],
+    [settings, config, setAuthState, onAuthError, setAuthContext],
   );
+
+  const handleApiKeySubmit = useCallback(
+    async (apiKey: string) => {
+      try {
+        onAuthError(null);
+        if (!apiKey.trim() && apiKey.length > 1) {
+          onAuthError(
+            'API key cannot be empty string with length greater than 1.',
+          );
+          return;
+        }
+
+        await saveApiKey(apiKey);
+        await reloadApiKey();
+        await config.refreshAuth(AuthType.USE_GEMINI);
+        setAuthState(AuthState.Authenticated);
+      } catch (e) {
+        onAuthError(
+          `Failed to save API key: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    },
+    [setAuthState, onAuthError, reloadApiKey, config],
+  );
+
+  const handleApiKeyCancel = useCallback(() => {
+    // Go back to auth method selection
+    setAuthState(AuthState.Updating);
+  }, [setAuthState]);
 
   // Sync user tier from config when authentication changes
   useEffect(() => {
     // Only sync when not currently authenticating
     if (authState === AuthState.Authenticated) {
       setUserTier(config.getUserTier());
+      setPaidTier(config.getUserPaidTier());
     }
   }, [config, authState]);
 
   // Check for enforced auth type mismatch
   useEffect(() => {
     if (
-      settings.merged.security?.auth?.enforcedType &&
-      settings.merged.security?.auth.selectedType &&
-      settings.merged.security?.auth.enforcedType !==
-        settings.merged.security?.auth.selectedType
+      settings.merged.security.auth.enforcedType &&
+      settings.merged.security.auth.selectedType &&
+      settings.merged.security.auth.enforcedType !==
+        settings.merged.security.auth.selectedType
     ) {
       onAuthError(
-        `Authentication is enforced to be ${settings.merged.security?.auth.enforcedType}, but you are currently using ${settings.merged.security?.auth.selectedType}.`,
+        `Authentication is enforced to be ${settings.merged.security.auth.enforcedType}, but you are currently using ${settings.merged.security.auth.selectedType}.`,
       );
     } else if (
-      settings.merged.security?.auth?.selectedType &&
-      !settings.merged.security?.auth?.useExternal
+      settings.merged.security.auth.selectedType &&
+      !settings.merged.security.auth.useExternal
     ) {
+      // We skip validation for Gemini API key here because it might be stored
+      // in the keychain, which we can't check synchronously.
+      // The useAuth hook handles validation for this case.
+      if (settings.merged.security.auth.selectedType === AuthType.USE_GEMINI) {
+        return;
+      }
+
       const error = validateAuthMethod(
         settings.merged.security.auth.selectedType,
       );
@@ -362,31 +864,28 @@ Logging in with Google... Please restart Gemini CLI to continue.
       }
     }
   }, [
-    settings.merged.security?.auth?.selectedType,
-    settings.merged.security?.auth?.enforcedType,
-    settings.merged.security?.auth?.useExternal,
+    settings.merged.security.auth.selectedType,
+    settings.merged.security.auth.enforcedType,
+    settings.merged.security.auth.useExternal,
     onAuthError,
   ]);
 
-  const [editorError, setEditorError] = useState<string | null>(null);
-  const {
-    isEditorDialogOpen,
-    openEditorDialog,
-    handleEditorSelect,
-    exitEditorDialog,
-  } = useEditorSettings(settings, setEditorError, historyManager.addItem);
-
-  const { isSettingsDialogOpen, openSettingsDialog, closeSettingsDialog } =
-    useSettingsCommand();
-
-  const {
-    showWorkspaceMigrationDialog,
-    workspaceExtensions,
-    onWorkspaceMigrationDialogOpen,
-    onWorkspaceMigrationDialogClose,
-  } = useWorkspaceMigration(settings);
+  const { isModelDialogOpen, openModelDialog, closeModelDialog } =
+    useModelCommand();
 
   const { toggleVimEnabled } = useVimMode();
+
+  const setIsBackgroundShellListOpenRef = useRef<(open: boolean) => void>(
+    () => {},
+  );
+  const [shortcutsHelpVisible, setShortcutsHelpVisible] = useState(false);
+
+  const {
+    cleanUiDetailsVisible,
+    setCleanUiDetailsVisible,
+    toggleCleanUiDetailsVisible,
+    revealCleanUiDetailsTemporarily,
+  } = useVisibilityToggle();
 
   const slashCommandActions = useMemo(
     () => ({
@@ -395,6 +894,10 @@ Logging in with Google... Please restart Gemini CLI to continue.
       openEditorDialog,
       openPrivacyNotice: () => setShowPrivacyNotice(true),
       openSettingsDialog,
+      openSessionBrowser,
+      openModelDialog,
+      openAgentConfigDialog,
+      openPermissionsDialog,
       quit: (messages: HistoryItem[]) => {
         setQuittingMessages(messages);
         setTimeout(async () => {
@@ -404,16 +907,41 @@ Logging in with Google... Please restart Gemini CLI to continue.
       },
       setDebugMessage,
       toggleCorgiMode: () => setCorgiMode((prev) => !prev),
+      toggleDebugProfiler,
+      dispatchExtensionStateUpdate,
+      addConfirmUpdateExtensionRequest,
+      toggleBackgroundShell: () => {
+        toggleBackgroundShellRef.current();
+        if (!isBackgroundShellVisibleRef.current) {
+          setEmbeddedShellFocused(true);
+          if (backgroundShellsRef.current.size > 1) {
+            setIsBackgroundShellListOpenRef.current(true);
+          } else {
+            setIsBackgroundShellListOpenRef.current(false);
+          }
+        }
+      },
+      toggleShortcutsHelp: () => setShortcutsHelpVisible((visible) => !visible),
+      setText: stableSetText,
     }),
     [
       setAuthState,
       openThemeDialog,
       openEditorDialog,
       openSettingsDialog,
+      openSessionBrowser,
+      openModelDialog,
+      openAgentConfigDialog,
       setQuittingMessages,
       setDebugMessage,
       setShowPrivacyNotice,
       setCorgiMode,
+      dispatchExtensionStateUpdate,
+      openPermissionsDialog,
+      addConfirmUpdateExtensionRequest,
+      toggleDebugProfiler,
+      setShortcutsHelpVisible,
+      stableSetText,
     ],
   );
 
@@ -422,8 +950,7 @@ Logging in with Google... Please restart Gemini CLI to continue.
     slashCommands,
     pendingHistoryItems: pendingSlashCommandHistoryItems,
     commandContext,
-    shellConfirmationRequest,
-    confirmationRequest,
+    confirmationRequest: commandConfirmationRequest,
   } = useSlashCommandProcessor(
     config,
     settings,
@@ -433,9 +960,34 @@ Logging in with Google... Please restart Gemini CLI to continue.
     refreshStatic,
     toggleVimEnabled,
     setIsProcessing,
-    setGeminiMdFileCount,
     slashCommandActions,
+    extensionsUpdateStateInternal,
+    isConfigInitialized,
+    setBannerVisible,
+    setCustomDialog,
   );
+
+  const [authConsentRequest, setAuthConsentRequest] =
+    useState<ConfirmationRequest | null>(null);
+  const [permissionConfirmationRequest, setPermissionConfirmationRequest] =
+    useState<PermissionConfirmationRequest | null>(null);
+
+  useEffect(() => {
+    const handleConsentRequest = (payload: ConsentRequestPayload) => {
+      setAuthConsentRequest({
+        prompt: payload.prompt,
+        onConfirm: (confirmed: boolean) => {
+          setAuthConsentRequest(null);
+          payload.onConfirm(confirmed);
+        },
+      });
+    };
+
+    coreEvents.on(CoreEvent.ConsentRequest, handleConsentRequest);
+    return () => {
+      coreEvents.off(CoreEvent.ConsentRequest, handleConsentRequest);
+    };
+  }, []);
 
   const performMemoryRefresh = useCallback(async () => {
     historyManager.addItem(
@@ -446,38 +998,25 @@ Logging in with Google... Please restart Gemini CLI to continue.
       Date.now(),
     );
     try {
-      const { memoryContent, fileCount } = await loadHierarchicalGeminiMemory(
-        process.cwd(),
-        settings.merged.context?.loadMemoryFromIncludeDirectories
-          ? config.getWorkspaceContext().getDirectories()
-          : [],
-        config.getDebugMode(),
-        config.getFileService(),
-        settings.merged,
-        config.getExtensionContextFilePaths(),
-        config.isTrustedFolder(),
-        settings.merged.context?.importFormat || 'tree', // Use setting or default to 'tree'
-        config.getFileFilteringOptions(),
-      );
+      const { memoryContent, fileCount } =
+        await refreshServerHierarchicalMemory(config);
 
-      config.setUserMemory(memoryContent);
-      config.setGeminiMdFileCount(fileCount);
-      setGeminiMdFileCount(fileCount);
+      const flattenedMemory = flattenMemory(memoryContent);
 
       historyManager.addItem(
         {
           type: MessageType.INFO,
           text: `Memory refreshed successfully. ${
-            memoryContent.length > 0
-              ? `Loaded ${memoryContent.length} characters from ${fileCount} file(s).`
+            flattenedMemory.length > 0
+              ? `Loaded ${flattenedMemory.length} characters from ${fileCount} file(s).`
               : 'No memory content found.'
           }`,
         },
         Date.now(),
       );
       if (config.getDebugMode()) {
-        console.log(
-          `[DEBUG] Refreshed memory content in config: ${memoryContent.substring(
+        debugLogger.log(
+          `[DEBUG] Refreshed memory content in config: ${flattenedMemory.substring(
             0,
             200,
           )}...`,
@@ -492,11 +1031,64 @@ Logging in with Google... Please restart Gemini CLI to continue.
         },
         Date.now(),
       );
-      console.error('Error refreshing memory:', error);
+      debugLogger.warn('Error refreshing memory:', error);
     }
-  }, [config, historyManager, settings.merged]);
+  }, [config, historyManager]);
 
-  const cancelHandlerRef = useRef<() => void>(() => {});
+  const cancelHandlerRef = useRef<(shouldRestorePrompt?: boolean) => void>(
+    () => {},
+  );
+
+  const onCancelSubmit = useCallback((shouldRestorePrompt?: boolean) => {
+    if (shouldRestorePrompt) {
+      setPendingRestorePrompt(true);
+    } else {
+      setPendingRestorePrompt(false);
+      cancelHandlerRef.current(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (pendingRestorePrompt) {
+      const lastHistoryUserMsg = historyManager.history.findLast(
+        (h) => h.type === 'user',
+      );
+      const lastUserMsg = inputHistory.at(-1);
+
+      if (
+        !lastHistoryUserMsg ||
+        (typeof lastHistoryUserMsg.text === 'string' &&
+          lastHistoryUserMsg.text === lastUserMsg)
+      ) {
+        cancelHandlerRef.current(true);
+        setPendingRestorePrompt(false);
+      }
+    }
+  }, [pendingRestorePrompt, inputHistory, historyManager.history]);
+
+  const pendingHintsRef = useRef<string[]>([]);
+  const [pendingHintCount, setPendingHintCount] = useState(0);
+
+  const consumePendingHints = useCallback(() => {
+    if (pendingHintsRef.current.length === 0) {
+      return null;
+    }
+    const hint = pendingHintsRef.current.join('\n');
+    pendingHintsRef.current = [];
+    setPendingHintCount(0);
+    return hint;
+  }, []);
+
+  useEffect(() => {
+    const hintListener = (hint: string) => {
+      pendingHintsRef.current.push(hint);
+      setPendingHintCount((prev) => prev + 1);
+    };
+    config.userHintService.onUserHint(hintListener);
+    return () => {
+      config.userHintService.offUserHint(hintListener);
+    };
+  }, [config]);
 
   const {
     streamingState,
@@ -505,7 +1097,18 @@ Logging in with Google... Please restart Gemini CLI to continue.
     pendingHistoryItems: pendingGeminiHistoryItems,
     thought,
     cancelOngoingRequest,
+    pendingToolCalls,
+    handleApprovalModeChange,
+    activePtyId,
     loopDetectionConfirmationRequest,
+    lastOutputTime,
+    backgroundShellCount,
+    isBackgroundShellVisible,
+    toggleBackgroundShell,
+    backgroundCurrentShell,
+    backgroundShells,
+    dismissBackgroundShell,
+    retryStatus,
   } = useGeminiStream(
     config.getGeminiClient(),
     historyManager.history,
@@ -515,66 +1118,235 @@ Logging in with Google... Please restart Gemini CLI to continue.
     setDebugMessage,
     handleSlashCommand,
     shellModeActive,
-    () => settings.merged.general?.preferredEditor as EditorType,
+    getPreferredEditor,
     onAuthError,
     performMemoryRefresh,
     modelSwitchedFromQuotaError,
     setModelSwitchedFromQuotaError,
-    refreshStatic,
-    () => cancelHandlerRef.current(),
+    onCancelSubmit,
+    setEmbeddedShellFocused,
+    terminalWidth,
+    terminalHeight,
+    embeddedShellFocused,
+    consumePendingHints,
   );
 
-  const { messageQueue, addMessage, clearQueue, getQueuedMessagesText } =
-    useMessageQueue({
-      isConfigInitialized,
-      streamingState,
-      submitQuery,
-    });
+  toggleBackgroundShellRef.current = toggleBackgroundShell;
+  isBackgroundShellVisibleRef.current = isBackgroundShellVisible;
+  backgroundShellsRef.current = backgroundShells;
 
-  cancelHandlerRef.current = useCallback(() => {
-    const pendingHistoryItems = [
-      ...pendingSlashCommandHistoryItems,
-      ...pendingGeminiHistoryItems,
-    ];
-    if (isToolExecuting(pendingHistoryItems)) {
-      buffer.setText(''); // Just clear the prompt
-      return;
-    }
+  const {
+    activeBackgroundShellPid,
+    setIsBackgroundShellListOpen,
+    isBackgroundShellListOpen,
+    setActiveBackgroundShellPid,
+    backgroundShellHeight,
+  } = useBackgroundShellManager({
+    backgroundShells,
+    backgroundShellCount,
+    isBackgroundShellVisible,
+    activePtyId,
+    embeddedShellFocused,
+    setEmbeddedShellFocused,
+    terminalHeight,
+  });
 
-    const lastUserMessage = userMessages.at(-1);
-    let textToSet = lastUserMessage || '';
+  setIsBackgroundShellListOpenRef.current = setIsBackgroundShellListOpen;
 
-    const queuedText = getQueuedMessagesText();
-    if (queuedText) {
-      textToSet = textToSet ? `${textToSet}\n\n${queuedText}` : queuedText;
-      clearQueue();
-    }
+  const lastOutputTimeRef = useRef(0);
 
-    if (textToSet) {
-      buffer.setText(textToSet);
-    }
-  }, [
-    buffer,
-    userMessages,
-    getQueuedMessagesText,
+  useEffect(() => {
+    lastOutputTimeRef.current = lastOutputTime;
+  }, [lastOutputTime]);
+
+  const { shouldShowFocusHint, inactivityStatus } = useShellInactivityStatus({
+    activePtyId,
+    lastOutputTime,
+    streamingState,
+    pendingToolCalls,
+    embeddedShellFocused,
+    isInteractiveShellEnabled: config.isInteractiveShellEnabled(),
+  });
+
+  const shouldShowActionRequiredTitle = inactivityStatus === 'action_required';
+  const shouldShowSilentWorkingTitle = inactivityStatus === 'silent_working';
+
+  const handleApprovalModeChangeWithUiReveal = useCallback(
+    (mode: ApprovalMode) => {
+      void handleApprovalModeChange(mode);
+      if (!cleanUiDetailsVisible) {
+        revealCleanUiDetailsTemporarily(APPROVAL_MODE_REVEAL_DURATION_MS);
+      }
+    },
+    [
+      handleApprovalModeChange,
+      cleanUiDetailsVisible,
+      revealCleanUiDetailsTemporarily,
+    ],
+  );
+
+  const { isMcpReady } = useMcpStatus(config);
+
+  const {
+    messageQueue,
+    addMessage,
     clearQueue,
-    pendingSlashCommandHistoryItems,
-    pendingGeminiHistoryItems,
-  ]);
+    getQueuedMessagesText,
+    popAllMessages,
+  } = useMessageQueue({
+    isConfigInitialized,
+    streamingState,
+    submitQuery,
+    isMcpReady,
+  });
+
+  cancelHandlerRef.current = useCallback(
+    (shouldRestorePrompt: boolean = true) => {
+      const pendingHistoryItems = [
+        ...pendingSlashCommandHistoryItems,
+        ...pendingGeminiHistoryItems,
+      ];
+      if (isToolAwaitingConfirmation(pendingHistoryItems)) {
+        return; // Don't clear - user may be composing a follow-up message
+      }
+      if (isToolExecuting(pendingHistoryItems)) {
+        buffer.setText(''); // Clear for Ctrl+C cancellation
+        return;
+      }
+
+      const lastUserMessage = inputHistory.at(-1);
+      let textToSet = shouldRestorePrompt ? lastUserMessage || '' : '';
+
+      const queuedText = getQueuedMessagesText();
+      if (queuedText) {
+        textToSet = textToSet ? `${textToSet}\n\n${queuedText}` : queuedText;
+        clearQueue();
+      }
+
+      if (textToSet || !shouldRestorePrompt) {
+        buffer.setText(textToSet);
+      }
+    },
+    [
+      buffer,
+      inputHistory,
+      getQueuedMessagesText,
+      clearQueue,
+      pendingSlashCommandHistoryItems,
+      pendingGeminiHistoryItems,
+    ],
+  );
+
+  const handleHintSubmit = useCallback(
+    (hint: string) => {
+      const trimmed = hint.trim();
+      if (!trimmed) {
+        return;
+      }
+      config.userHintService.addUserHint(trimmed);
+      // Render hints with a distinct style.
+      historyManager.addItem({
+        type: 'hint',
+        text: trimmed,
+      });
+    },
+    [config, historyManager],
+  );
 
   const handleFinalSubmit = useCallback(
-    (submittedValue: string) => {
-      addMessage(submittedValue);
+    async (submittedValue: string) => {
+      reset();
+      // Explicitly hide the expansion hint and clear its x-second timer when a new turn begins.
+      triggerExpandHint(null);
+      if (!constrainHeight) {
+        setConstrainHeight(true);
+        if (!isAlternateBuffer) {
+          refreshStatic();
+        }
+      }
+
+      const isSlash = isSlashCommand(submittedValue.trim());
+      const isIdle = streamingState === StreamingState.Idle;
+      const isAgentRunning =
+        streamingState === StreamingState.Responding ||
+        isToolExecuting([
+          ...pendingSlashCommandHistoryItems,
+          ...pendingGeminiHistoryItems,
+        ]);
+
+      if (config.isModelSteeringEnabled() && isAgentRunning && !isSlash) {
+        handleHintSubmit(submittedValue);
+        addInput(submittedValue);
+        return;
+      }
+
+      if (isSlash || (isIdle && isMcpReady)) {
+        if (!isSlash) {
+          const permissions = await checkPermissions(submittedValue, config);
+          if (permissions.length > 0) {
+            setPermissionConfirmationRequest({
+              files: permissions,
+              onComplete: (result) => {
+                setPermissionConfirmationRequest(null);
+                if (result.allowed) {
+                  permissions.forEach((p) =>
+                    config.getWorkspaceContext().addReadOnlyPath(p),
+                  );
+                }
+                void submitQuery(submittedValue);
+              },
+            });
+            addInput(submittedValue);
+            return;
+          }
+        }
+        void submitQuery(submittedValue);
+      } else {
+        // Check messageQueue.length === 0 to only notify on the first queued item
+        if (isIdle && !isMcpReady && messageQueue.length === 0) {
+          coreEvents.emitFeedback(
+            'info',
+            'Waiting for MCP servers to initialize... Slash commands are still available and prompts will be queued.',
+          );
+        }
+        addMessage(submittedValue);
+      }
+      addInput(submittedValue); // Track input for up-arrow history
     },
-    [addMessage],
+    [
+      addMessage,
+      addInput,
+      submitQuery,
+      isMcpReady,
+      streamingState,
+      messageQueue.length,
+      pendingSlashCommandHistoryItems,
+      pendingGeminiHistoryItems,
+      config,
+      constrainHeight,
+      setConstrainHeight,
+      isAlternateBuffer,
+      refreshStatic,
+      reset,
+      handleHintSubmit,
+      triggerExpandHint,
+    ],
   );
 
   const handleClearScreen = useCallback(() => {
+    reset();
+    // Explicitly hide the expansion hint and clear its x-second timer when clearing the screen.
+    triggerExpandHint(null);
     historyManager.clearItems();
     clearConsoleMessagesState();
-    console.clear();
     refreshStatic();
-  }, [historyManager, clearConsoleMessagesState, refreshStatic]);
+  }, [
+    historyManager,
+    clearConsoleMessagesState,
+    refreshStatic,
+    reset,
+    triggerExpandHint,
+  ]);
 
   const { handleInput: vimHandleInput } = useVim(buffer, handleFinalSubmit);
 
@@ -587,37 +1359,89 @@ Logging in with Google... Please restart Gemini CLI to continue.
    * - Any future streaming states not explicitly allowed
    */
   const isInputActive =
+    isConfigInitialized &&
     !initError &&
     !isProcessing &&
+    !isResuming &&
+    !!slashCommands &&
     (streamingState === StreamingState.Idle ||
       streamingState === StreamingState.Responding) &&
     !proQuotaRequest;
 
-  // Compute available terminal height based on controls measurement
-  const availableTerminalHeight = useMemo(() => {
+  const [controlsHeight, setControlsHeight] = useState(0);
+
+  useLayoutEffect(() => {
     if (mainControlsRef.current) {
       const fullFooterMeasurement = measureElement(mainControlsRef.current);
-      return terminalHeight - fullFooterMeasurement.height - staticExtraHeight;
+      const roundedHeight = Math.round(fullFooterMeasurement.height);
+      if (roundedHeight > 0 && roundedHeight !== controlsHeight) {
+        setControlsHeight(roundedHeight);
+      }
     }
-    return terminalHeight - staticExtraHeight;
-  }, [terminalHeight]);
+  }, [buffer, terminalWidth, terminalHeight, controlsHeight]);
 
-  const isFocused = useFocus();
-  useBracketedPaste();
+  // Compute available terminal height based on controls measurement
+  const availableTerminalHeight = Math.max(
+    0,
+    terminalHeight -
+      controlsHeight -
+      staticExtraHeight -
+      2 -
+      backgroundShellHeight,
+  );
+
+  config.setShellExecutionConfig({
+    terminalWidth: Math.floor(terminalWidth * SHELL_WIDTH_FRACTION),
+    terminalHeight: Math.max(
+      Math.floor(availableTerminalHeight - SHELL_HEIGHT_PADDING),
+      1,
+    ),
+    pager: settings.merged.tools.shell.pager,
+    showColor: settings.merged.tools.shell.showColor,
+    sanitizationConfig: config.sanitizationConfig,
+  });
+
+  const { isFocused, hasReceivedFocusEvent } = useFocus();
 
   // Context file names computation
   const contextFileNames = useMemo(() => {
-    const fromSettings = settings.merged.context?.fileName;
+    const fromSettings = settings.merged.context.fileName;
     return fromSettings
       ? Array.isArray(fromSettings)
         ? fromSettings
         : [fromSettings]
       : getAllGeminiMdFilenames();
-  }, [settings.merged.context?.fileName]);
+  }, [settings.merged.context.fileName]);
   // Initial prompt handling
   const initialPrompt = useMemo(() => config.getQuestion(), [config]);
   const initialPromptSubmitted = useRef(false);
   const geminiClient = config.getGeminiClient();
+
+  useEffect(() => {
+    if (activePtyId) {
+      try {
+        ShellExecutionService.resizePty(
+          activePtyId,
+          Math.floor(terminalWidth * SHELL_WIDTH_FRACTION),
+          Math.max(
+            Math.floor(availableTerminalHeight - SHELL_HEIGHT_PADDING),
+            1,
+          ),
+        );
+      } catch (e) {
+        // This can happen in a race condition where the pty exits
+        // right before we try to resize it.
+        if (
+          !(
+            e instanceof Error &&
+            e.message.includes('Cannot resize a pty that has already exited')
+          )
+        ) {
+          throw e;
+        }
+      }
+    }
+  }, [terminalWidth, availableTerminalHeight, activePtyId]);
 
   useEffect(() => {
     if (
@@ -631,7 +1455,7 @@ Logging in with Google... Please restart Gemini CLI to continue.
       !showPrivacyNotice &&
       geminiClient?.isInitialized?.()
     ) {
-      handleFinalSubmit(initialPrompt);
+      void handleFinalSubmit(initialPrompt);
       initialPromptSubmitted.current = true;
     }
   }, [
@@ -647,7 +1471,7 @@ Logging in with Google... Please restart Gemini CLI to continue.
   ]);
 
   const [idePromptAnswered, setIdePromptAnswered] = useState(false);
-  const [currentIDE, setCurrentIDE] = useState<DetectedIde | null>(null);
+  const [currentIDE, setCurrentIDE] = useState<IdeInfo | null>(null);
 
   useEffect(() => {
     const getIde = async () => {
@@ -655,34 +1479,151 @@ Logging in with Google... Please restart Gemini CLI to continue.
       const currentIde = ideClient.getCurrentIde();
       setCurrentIDE(currentIde || null);
     };
+    // eslint-disable-next-line @typescript-eslint/no-floating-promises
     getIde();
   }, []);
   const shouldShowIdePrompt = Boolean(
     currentIDE &&
       !config.getIdeMode() &&
-      !settings.merged.ide?.hasSeenNudge &&
+      !settings.merged.ide.hasSeenNudge &&
       !idePromptAnswered,
   );
 
   const [showErrorDetails, setShowErrorDetails] = useState<boolean>(false);
-  const [showToolDescriptions, setShowToolDescriptions] =
-    useState<boolean>(false);
+  const [showFullTodos, setShowFullTodos] = useState<boolean>(false);
+  const [renderMarkdown, setRenderMarkdown] = useState<boolean>(true);
 
-  const [ctrlCPressedOnce, setCtrlCPressedOnce] = useState(false);
-  const ctrlCTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const [ctrlDPressedOnce, setCtrlDPressedOnce] = useState(false);
-  const ctrlDTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const [constrainHeight, setConstrainHeight] = useState<boolean>(true);
+  const handleExitRepeat = useCallback(
+    (count: number) => {
+      if (count > 2) {
+        recordExitFail(config);
+      }
+      if (count > 1) {
+        void handleSlashCommand('/quit', undefined, undefined, false);
+      }
+    },
+    [config, handleSlashCommand],
+  );
+
+  const { pressCount: ctrlCPressCount, handlePress: handleCtrlCPress } =
+    useRepeatedKeyPress({
+      windowMs: WARNING_PROMPT_DURATION_MS,
+      onRepeat: handleExitRepeat,
+    });
+
+  const { pressCount: ctrlDPressCount, handlePress: handleCtrlDPress } =
+    useRepeatedKeyPress({
+      windowMs: WARNING_PROMPT_DURATION_MS,
+      onRepeat: handleExitRepeat,
+    });
+
   const [ideContextState, setIdeContextState] = useState<
     IdeContext | undefined
   >();
   const [showEscapePrompt, setShowEscapePrompt] = useState(false);
   const [showIdeRestartPrompt, setShowIdeRestartPrompt] = useState(false);
 
-  const { isFolderTrustDialogOpen, handleFolderTrustSelect, isRestarting } =
-    useFolderTrust(settings, setIsTrustedFolder, refreshStatic);
-  const { needsRestart: ideNeedsRestart } = useIdeTrustListener();
+  const [transientMessage, showTransientMessage] = useTimedMessage<{
+    text: string;
+    type: TransientMessageType;
+  }>(WARNING_PROMPT_DURATION_MS);
+
+  const {
+    isFolderTrustDialogOpen,
+    discoveryResults: folderDiscoveryResults,
+    handleFolderTrustSelect,
+    isRestarting,
+  } = useFolderTrust(settings, setIsTrustedFolder, historyManager.addItem);
+
+  const policyUpdateConfirmationRequest =
+    config.getPolicyUpdateConfirmationRequest();
+  const [isPolicyUpdateDialogOpen, setIsPolicyUpdateDialogOpen] = useState(
+    !!policyUpdateConfirmationRequest,
+  );
+  const {
+    needsRestart: ideNeedsRestart,
+    restartReason: ideTrustRestartReason,
+  } = useIdeTrustListener();
   const isInitialMount = useRef(true);
+
+  useIncludeDirsTrust(config, isTrustedFolder, historyManager, setCustomDialog);
+
+  const handleAutoEnableRetention = useCallback(() => {
+    const userSettings = settings.forScope(SettingScope.User).settings;
+    const currentRetention = userSettings.general?.sessionRetention ?? {};
+
+    settings.setValue(SettingScope.User, 'general.sessionRetention', {
+      ...currentRetention,
+      enabled: true,
+      maxAge: '30d',
+      warningAcknowledged: true,
+    });
+  }, [settings]);
+
+  const {
+    shouldShowWarning: shouldShowRetentionWarning,
+    checkComplete: retentionCheckComplete,
+    sessionsToDeleteCount,
+  } = useSessionRetentionCheck(
+    config,
+    settings.merged,
+    handleAutoEnableRetention,
+  );
+
+  const tabFocusTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    const handleTransientMessage = (payload: {
+      message: string;
+      type: TransientMessageType;
+    }) => {
+      showTransientMessage({ text: payload.message, type: payload.type });
+    };
+
+    const handleSelectionWarning = () => {
+      showTransientMessage({
+        text: 'Press Ctrl-S to enter selection mode to copy text.',
+        type: TransientMessageType.Warning,
+      });
+    };
+    const handlePasteTimeout = () => {
+      showTransientMessage({
+        text: 'Paste Timed out. Possibly due to slow connection.',
+        type: TransientMessageType.Warning,
+      });
+    };
+
+    appEvents.on(AppEvent.TransientMessage, handleTransientMessage);
+    appEvents.on(AppEvent.SelectionWarning, handleSelectionWarning);
+    appEvents.on(AppEvent.PasteTimeout, handlePasteTimeout);
+
+    return () => {
+      appEvents.off(AppEvent.TransientMessage, handleTransientMessage);
+      appEvents.off(AppEvent.SelectionWarning, handleSelectionWarning);
+      appEvents.off(AppEvent.PasteTimeout, handlePasteTimeout);
+      if (tabFocusTimeoutRef.current) {
+        clearTimeout(tabFocusTimeoutRef.current);
+      }
+    };
+  }, [showTransientMessage]);
+
+  const handleWarning = useCallback(
+    (message: string) => {
+      showTransientMessage({
+        text: message,
+        type: TransientMessageType.Warning,
+      });
+    },
+    [showTransientMessage],
+  );
+
+  const { handleSuspend } = useSuspend({
+    handleWarning,
+    setRawMode,
+    refreshStatic,
+    setForceRerenderKey,
+    shouldUseAlternateScreen,
+  });
 
   useEffect(() => {
     if (ideNeedsRestart) {
@@ -707,8 +1648,8 @@ Logging in with Google... Please restart Gemini CLI to continue.
   }, [terminalWidth, refreshStatic]);
 
   useEffect(() => {
-    const unsubscribe = ideContext.subscribeToIdeContext(setIdeContextState);
-    setIdeContextState(ideContext.getIdeContext());
+    const unsubscribe = ideContextStore.subscribe(setIdeContextState);
+    setIdeContextState(ideContextStore.get());
     return unsubscribe;
   }, []);
 
@@ -719,20 +1660,10 @@ Logging in with Google... Please restart Gemini CLI to continue.
     };
     appEvents.on(AppEvent.OpenDebugConsole, openDebugConsole);
 
-    const logErrorHandler = (errorMessage: unknown) => {
-      handleNewMessage({
-        type: 'error',
-        content: String(errorMessage),
-        count: 1,
-      });
-    };
-    appEvents.on(AppEvent.LogError, logErrorHandler);
-
     return () => {
       appEvents.off(AppEvent.OpenDebugConsole, openDebugConsole);
-      appEvents.off(AppEvent.LogError, logErrorHandler);
     };
-  }, [handleNewMessage]);
+  }, [config]);
 
   const handleEscapePromptChange = useCallback((showPrompt: boolean) => {
     setShowEscapePrompt(showPrompt);
@@ -741,143 +1672,329 @@ Logging in with Google... Please restart Gemini CLI to continue.
   const handleIdePromptComplete = useCallback(
     (result: IdeIntegrationNudgeResult) => {
       if (result.userSelection === 'yes') {
+        // eslint-disable-next-line @typescript-eslint/no-floating-promises
         handleSlashCommand('/ide install');
-        settings.setValue(
-          SettingScope.User,
-          'hasSeenIdeIntegrationNudge',
-          true,
-        );
+        settings.setValue(SettingScope.User, 'ide.hasSeenNudge', true);
       } else if (result.userSelection === 'dismiss') {
-        settings.setValue(
-          SettingScope.User,
-          'hasSeenIdeIntegrationNudge',
-          true,
-        );
+        settings.setValue(SettingScope.User, 'ide.hasSeenNudge', true);
       }
       setIdePromptAnswered(true);
     },
     [handleSlashCommand, settings],
   );
 
-  const { elapsedTime, currentLoadingPhrase } =
-    useLoadingIndicator(streamingState);
-
-  const handleExit = useCallback(
-    (
-      pressedOnce: boolean,
-      setPressedOnce: (value: boolean) => void,
-      timerRef: React.MutableRefObject<NodeJS.Timeout | null>,
-    ) => {
-      if (pressedOnce) {
-        if (timerRef.current) {
-          clearTimeout(timerRef.current);
-        }
-        handleSlashCommand('/quit');
-      } else {
-        setPressedOnce(true);
-        timerRef.current = setTimeout(() => {
-          setPressedOnce(false);
-          timerRef.current = null;
-        }, CTRL_EXIT_PROMPT_DURATION_MS);
-      }
-    },
-    [handleSlashCommand],
-  );
+  const { elapsedTime, currentLoadingPhrase } = useLoadingIndicator({
+    streamingState,
+    shouldShowFocusHint,
+    retryStatus,
+    loadingPhrasesMode: settings.merged.ui.loadingPhrases,
+    customWittyPhrases: settings.merged.ui.customWittyPhrases,
+    errorVerbosity: settings.merged.ui.errorVerbosity,
+  });
 
   const handleGlobalKeypress = useCallback(
-    (key: Key) => {
+    (key: Key): boolean => {
       // Debug log keystrokes if enabled
-      if (settings.merged.general?.debugKeystrokeLogging) {
-        console.log('[DEBUG] Keystroke:', JSON.stringify(key));
+      if (settings.merged.general.debugKeystrokeLogging) {
+        debugLogger.log('[DEBUG] Keystroke:', JSON.stringify(key));
       }
 
-      const anyDialogOpen =
-        isThemeDialogOpen ||
-        isAuthDialogOpen ||
-        isEditorDialogOpen ||
-        isSettingsDialogOpen ||
-        isFolderTrustDialogOpen ||
-        showPrivacyNotice;
-      if (anyDialogOpen) {
-        return;
+      if (shortcutsHelpVisible && shouldDismissShortcutsHelpOnHotkey(key)) {
+        setShortcutsHelpVisible(false);
+      }
+
+      if (isAlternateBuffer && keyMatchers[Command.TOGGLE_COPY_MODE](key)) {
+        setCopyModeEnabled(true);
+        disableMouseEvents();
+        return true;
+      }
+
+      if (keyMatchers[Command.QUIT](key)) {
+        // If the user presses Ctrl+C, we want to cancel any ongoing requests.
+        // This should happen regardless of the count.
+        cancelOngoingRequest?.();
+
+        handleCtrlCPress();
+        return true;
+      } else if (keyMatchers[Command.EXIT](key)) {
+        handleCtrlDPress();
+        return true;
+      } else if (keyMatchers[Command.SUSPEND_APP](key)) {
+        handleSuspend();
+      } else if (
+        keyMatchers[Command.TOGGLE_COPY_MODE](key) &&
+        !isAlternateBuffer
+      ) {
+        showTransientMessage({
+          text: 'Use Ctrl+O to expand and collapse blocks of content.',
+          type: TransientMessageType.Warning,
+        });
+        return true;
       }
 
       let enteringConstrainHeightMode = false;
       if (!constrainHeight) {
         enteringConstrainHeightMode = true;
         setConstrainHeight(true);
+        if (keyMatchers[Command.SHOW_MORE_LINES](key)) {
+          // If the user manually collapses the view, show the hint and reset the x-second timer.
+          triggerExpandHint(true);
+        }
+        if (!isAlternateBuffer) {
+          refreshStatic();
+        }
       }
 
       if (keyMatchers[Command.SHOW_ERROR_DETAILS](key)) {
-        setShowErrorDetails((prev) => !prev);
-      } else if (keyMatchers[Command.TOGGLE_TOOL_DESCRIPTIONS](key)) {
-        const newValue = !showToolDescriptions;
-        setShowToolDescriptions(newValue);
-
-        const mcpServers = config.getMcpServers();
-        if (Object.keys(mcpServers || {}).length > 0) {
-          handleSlashCommand(newValue ? '/mcp desc' : '/mcp nodesc');
+        if (settings.merged.general.devtools) {
+          void (async () => {
+            const { toggleDevToolsPanel } = await import(
+              '../utils/devtoolsService.js'
+            );
+            await toggleDevToolsPanel(
+              config,
+              showErrorDetails,
+              () => setShowErrorDetails((prev) => !prev),
+              () => setShowErrorDetails(true),
+            );
+          })();
+        } else {
+          setShowErrorDetails((prev) => !prev);
         }
+        return true;
+      } else if (keyMatchers[Command.SHOW_FULL_TODOS](key)) {
+        setShowFullTodos((prev) => !prev);
+        return true;
+      } else if (keyMatchers[Command.TOGGLE_MARKDOWN](key)) {
+        setRenderMarkdown((prev) => {
+          const newValue = !prev;
+          // Force re-render of static content
+          refreshStatic();
+          return newValue;
+        });
+        return true;
       } else if (
-        keyMatchers[Command.TOGGLE_IDE_CONTEXT_DETAIL](key) &&
+        keyMatchers[Command.SHOW_IDE_CONTEXT_DETAIL](key) &&
         config.getIdeMode() &&
         ideContextState
       ) {
+        // eslint-disable-next-line @typescript-eslint/no-floating-promises
         handleSlashCommand('/ide status');
-      } else if (keyMatchers[Command.QUIT](key)) {
-        if (!ctrlCPressedOnce) {
-          cancelOngoingRequest?.();
-        }
-        handleExit(ctrlCPressedOnce, setCtrlCPressedOnce, ctrlCTimerRef);
-      } else if (keyMatchers[Command.EXIT](key)) {
-        if (buffer.text.length > 0) {
-          return;
-        }
-        handleExit(ctrlDPressedOnce, setCtrlDPressedOnce, ctrlDTimerRef);
+        return true;
       } else if (
         keyMatchers[Command.SHOW_MORE_LINES](key) &&
         !enteringConstrainHeightMode
       ) {
         setConstrainHeight(false);
+        // If the user manually expands the view, show the hint and reset the x-second timer.
+        triggerExpandHint(true);
+        if (!isAlternateBuffer) {
+          refreshStatic();
+        }
+        return true;
+      } else if (
+        (keyMatchers[Command.FOCUS_SHELL_INPUT](key) ||
+          keyMatchers[Command.UNFOCUS_BACKGROUND_SHELL_LIST](key)) &&
+        (activePtyId || (isBackgroundShellVisible && backgroundShells.size > 0))
+      ) {
+        if (embeddedShellFocused) {
+          const capturedTime = lastOutputTimeRef.current;
+          if (tabFocusTimeoutRef.current)
+            clearTimeout(tabFocusTimeoutRef.current);
+          tabFocusTimeoutRef.current = setTimeout(() => {
+            if (lastOutputTimeRef.current === capturedTime) {
+              setEmbeddedShellFocused(false);
+            } else {
+              showTransientMessage({
+                text: 'Use Shift+Tab to unfocus',
+                type: TransientMessageType.Warning,
+              });
+            }
+          }, 150);
+          return false;
+        }
+
+        const isIdle = Date.now() - lastOutputTimeRef.current >= 100;
+
+        if (isIdle && !activePtyId && !isBackgroundShellVisible) {
+          if (tabFocusTimeoutRef.current)
+            clearTimeout(tabFocusTimeoutRef.current);
+          toggleBackgroundShell();
+          setEmbeddedShellFocused(true);
+          if (backgroundShells.size > 1) setIsBackgroundShellListOpen(true);
+          return true;
+        }
+
+        setEmbeddedShellFocused(true);
+        return true;
+      } else if (
+        keyMatchers[Command.UNFOCUS_SHELL_INPUT](key) ||
+        keyMatchers[Command.UNFOCUS_BACKGROUND_SHELL](key)
+      ) {
+        if (embeddedShellFocused) {
+          setEmbeddedShellFocused(false);
+          return true;
+        }
+        return false;
+      } else if (keyMatchers[Command.TOGGLE_BACKGROUND_SHELL](key)) {
+        if (activePtyId) {
+          backgroundCurrentShell();
+          // After backgrounding, we explicitly do NOT show or focus the background UI.
+        } else {
+          toggleBackgroundShell();
+          // Toggle focus based on intent: if we were hiding, unfocus; if showing, focus.
+          if (!isBackgroundShellVisible && backgroundShells.size > 0) {
+            setEmbeddedShellFocused(true);
+            if (backgroundShells.size > 1) {
+              setIsBackgroundShellListOpen(true);
+            }
+          } else {
+            setEmbeddedShellFocused(false);
+          }
+        }
+        return true;
+      } else if (keyMatchers[Command.TOGGLE_BACKGROUND_SHELL_LIST](key)) {
+        if (backgroundShells.size > 0 && isBackgroundShellVisible) {
+          if (!embeddedShellFocused) {
+            setEmbeddedShellFocused(true);
+          }
+          setIsBackgroundShellListOpen(true);
+        }
+        return true;
       }
+      return false;
     },
     [
       constrainHeight,
       setConstrainHeight,
       setShowErrorDetails,
-      showToolDescriptions,
-      setShowToolDescriptions,
       config,
       ideContextState,
-      handleExit,
-      ctrlCPressedOnce,
-      setCtrlCPressedOnce,
-      ctrlCTimerRef,
-      buffer.text.length,
-      ctrlDPressedOnce,
-      setCtrlDPressedOnce,
-      ctrlDTimerRef,
+      handleCtrlCPress,
+      handleCtrlDPress,
       handleSlashCommand,
       cancelOngoingRequest,
-      isThemeDialogOpen,
-      isAuthDialogOpen,
-      isEditorDialogOpen,
-      isSettingsDialogOpen,
-      isFolderTrustDialogOpen,
-      showPrivacyNotice,
-      settings.merged.general?.debugKeystrokeLogging,
+      activePtyId,
+      handleSuspend,
+      embeddedShellFocused,
+      settings.merged.general.debugKeystrokeLogging,
+      refreshStatic,
+      setCopyModeEnabled,
+      tabFocusTimeoutRef,
+      isAlternateBuffer,
+      shortcutsHelpVisible,
+      backgroundCurrentShell,
+      toggleBackgroundShell,
+      backgroundShells,
+      isBackgroundShellVisible,
+      setIsBackgroundShellListOpen,
+      lastOutputTimeRef,
+      showTransientMessage,
+      settings.merged.general.devtools,
+      showErrorDetails,
+      triggerExpandHint,
     ],
   );
 
-  useKeypress(handleGlobalKeypress, { isActive: true });
+  useKeypress(handleGlobalKeypress, {
+    isActive: true,
+    priority: KeypressPriority.Low,
+  });
+
   useKeypress(
-    (key) => {
-      if (key.name === 'r' || key.name === 'R') {
-        process.exit(0);
-      }
+    () => {
+      setCopyModeEnabled(false);
+      enableMouseEvents();
+      return true;
     },
-    { isActive: showIdeRestartPrompt },
+    {
+      isActive: copyModeEnabled,
+      // We need to receive keypresses first so they do not bubble to other
+      // handlers.
+      priority: KeypressPriority.Critical,
+    },
   );
+
+  useEffect(() => {
+    // Respect hideWindowTitle settings
+    if (settings.merged.ui.hideWindowTitle) return;
+
+    const paddedTitle = computeTerminalTitle({
+      streamingState,
+      thoughtSubject: thought?.subject,
+      isConfirming:
+        !!commandConfirmationRequest || shouldShowActionRequiredTitle,
+      isSilentWorking: shouldShowSilentWorkingTitle,
+      folderName: basename(config.getTargetDir()),
+      showThoughts: !!settings.merged.ui.showStatusInTitle,
+      useDynamicTitle: settings.merged.ui.dynamicWindowTitle,
+    });
+
+    // Only update the title if it's different from the last value we set
+    if (lastTitleRef.current !== paddedTitle) {
+      lastTitleRef.current = paddedTitle;
+      stdout.write(`\x1b]0;${paddedTitle}\x07`);
+    }
+    // Note: We don't need to reset the window title on exit because Gemini CLI is already doing that elsewhere
+  }, [
+    streamingState,
+    thought,
+    commandConfirmationRequest,
+    shouldShowActionRequiredTitle,
+    shouldShowSilentWorkingTitle,
+    settings.merged.ui.showStatusInTitle,
+    settings.merged.ui.dynamicWindowTitle,
+    settings.merged.ui.hideWindowTitle,
+    config,
+    stdout,
+  ]);
+
+  useEffect(() => {
+    const handleUserFeedback = (payload: UserFeedbackPayload) => {
+      let type: MessageType;
+      switch (payload.severity) {
+        case 'error':
+          type = MessageType.ERROR;
+          break;
+        case 'warning':
+          type = MessageType.WARNING;
+          break;
+        case 'info':
+          type = MessageType.INFO;
+          break;
+        default:
+          throw new Error(
+            `Unexpected severity for user feedback: ${payload.severity}`,
+          );
+      }
+
+      historyManager.addItem(
+        {
+          type,
+          text: payload.message,
+        },
+        Date.now(),
+      );
+
+      // If there is an attached error object, log it to the debug drawer.
+      if (payload.error) {
+        debugLogger.warn(
+          `[Feedback Details for "${payload.message}"]`,
+          payload.error,
+        );
+      }
+    };
+
+    coreEvents.on(CoreEvent.UserFeedback, handleUserFeedback);
+
+    // Flush any messages that happened during startup before this component
+    // mounted.
+    coreEvents.drainBacklogs();
+
+    return () => {
+      coreEvents.off(CoreEvent.UserFeedback, handleUserFeedback);
+    };
+  }, [historyManager]);
 
   const filteredConsoleMessages = useMemo(() => {
     if (config.getDebugMode()) {
@@ -898,34 +2015,204 @@ Logging in with Google... Please restart Gemini CLI to continue.
   const nightly = props.version.includes('nightly');
 
   const dialogsVisible =
-    showWorkspaceMigrationDialog ||
+    (shouldShowRetentionWarning && retentionCheckComplete) ||
     shouldShowIdePrompt ||
     isFolderTrustDialogOpen ||
-    !!shellConfirmationRequest ||
-    !!confirmationRequest ||
+    isPolicyUpdateDialogOpen ||
+    adminSettingsChanged ||
+    !!commandConfirmationRequest ||
+    !!authConsentRequest ||
+    !!permissionConfirmationRequest ||
+    !!customDialog ||
+    confirmUpdateExtensionRequests.length > 0 ||
     !!loopDetectionConfirmationRequest ||
     isThemeDialogOpen ||
     isSettingsDialogOpen ||
+    isModelDialogOpen ||
+    isAgentConfigDialogOpen ||
+    isPermissionsDialogOpen ||
     isAuthenticating ||
     isAuthDialogOpen ||
     isEditorDialogOpen ||
     showPrivacyNotice ||
-    !!proQuotaRequest;
+    showIdeRestartPrompt ||
+    !!proQuotaRequest ||
+    !!validationRequest ||
+    !!overageMenuRequest ||
+    !!emptyWalletRequest ||
+    isSessionBrowserOpen ||
+    authState === AuthState.AwaitingApiKeyInput ||
+    !!newAgents;
 
   const pendingHistoryItems = useMemo(
     () => [...pendingSlashCommandHistoryItems, ...pendingGeminiHistoryItems],
     [pendingSlashCommandHistoryItems, pendingGeminiHistoryItems],
   );
 
+  const hasPendingToolConfirmation = useMemo(
+    () => isToolAwaitingConfirmation(pendingHistoryItems),
+    [pendingHistoryItems],
+  );
+
+  const hasConfirmUpdateExtensionRequests =
+    confirmUpdateExtensionRequests.length > 0;
+  const hasLoopDetectionConfirmationRequest =
+    !!loopDetectionConfirmationRequest;
+
+  const hasPendingActionRequired =
+    hasPendingToolConfirmation ||
+    !!commandConfirmationRequest ||
+    !!authConsentRequest ||
+    hasConfirmUpdateExtensionRequests ||
+    hasLoopDetectionConfirmationRequest ||
+    !!proQuotaRequest ||
+    !!validationRequest ||
+    !!overageMenuRequest ||
+    !!emptyWalletRequest ||
+    !!customDialog;
+
+  const allowPlanMode =
+    config.isPlanEnabled() &&
+    streamingState === StreamingState.Idle &&
+    !hasPendingActionRequired;
+
+  const showApprovalModeIndicator = useApprovalModeIndicator({
+    config,
+    addItem: historyManager.addItem,
+    onApprovalModeChange: handleApprovalModeChangeWithUiReveal,
+    isActive: !embeddedShellFocused,
+    allowPlanMode,
+  });
+
+  useRunEventNotifications({
+    notificationsEnabled,
+    isFocused,
+    hasReceivedFocusEvent,
+    streamingState,
+    hasPendingActionRequired,
+    pendingHistoryItems,
+    commandConfirmationRequest,
+    authConsentRequest,
+    permissionConfirmationRequest,
+    hasConfirmUpdateExtensionRequests,
+    hasLoopDetectionConfirmationRequest,
+  });
+
+  const isPassiveShortcutsHelpState =
+    isInputActive &&
+    streamingState === StreamingState.Idle &&
+    !hasPendingActionRequired;
+
+  useEffect(() => {
+    if (shortcutsHelpVisible && !isPassiveShortcutsHelpState) {
+      setShortcutsHelpVisible(false);
+    }
+  }, [
+    shortcutsHelpVisible,
+    isPassiveShortcutsHelpState,
+    setShortcutsHelpVisible,
+  ]);
+
+  useEffect(() => {
+    if (
+      !isConfigInitialized ||
+      !config.isModelSteeringEnabled() ||
+      streamingState !== StreamingState.Idle ||
+      !isMcpReady ||
+      isToolAwaitingConfirmation(pendingHistoryItems)
+    ) {
+      return;
+    }
+
+    const pendingHint = consumePendingHints();
+    if (!pendingHint) {
+      return;
+    }
+
+    void generateSteeringAckMessage(
+      config.getBaseLlmClient(),
+      pendingHint,
+    ).then((ackText) => {
+      historyManager.addItem({
+        type: 'info',
+        text: ackText,
+      });
+    });
+    void submitQuery([{ text: buildUserSteeringHintPrompt(pendingHint) }]);
+  }, [
+    config,
+    historyManager,
+    isConfigInitialized,
+    isMcpReady,
+    streamingState,
+    submitQuery,
+    consumePendingHints,
+    pendingHistoryItems,
+    pendingHintCount,
+  ]);
+
+  const allToolCalls = useMemo(
+    () =>
+      pendingHistoryItems
+        .filter(
+          (item): item is HistoryItemToolGroup => item.type === 'tool_group',
+        )
+        .flatMap((item) => item.tools),
+    [pendingHistoryItems],
+  );
+
+  const [geminiMdFileCount, setGeminiMdFileCount] = useState<number>(
+    config.getGeminiMdFileCount(),
+  );
+  useEffect(() => {
+    const handleMemoryChanged = (result: MemoryChangedPayload) => {
+      setGeminiMdFileCount(result.fileCount);
+    };
+    coreEvents.on(CoreEvent.MemoryChanged, handleMemoryChanged);
+    return () => {
+      coreEvents.off(CoreEvent.MemoryChanged, handleMemoryChanged);
+    };
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const fetchBannerTexts = async () => {
+      const [defaultBanner, warningBanner] = await Promise.all([
+        config.getBannerTextNoCapacityIssues(),
+        config.getBannerTextCapacityIssues(),
+      ]);
+
+      if (isMounted) {
+        setDefaultBannerText(defaultBanner);
+        setWarningBannerText(warningBanner);
+        setBannerVisible(true);
+      }
+    };
+    // eslint-disable-next-line @typescript-eslint/no-floating-promises
+    fetchBannerTexts();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [config, refreshStatic]);
+
   const uiState: UIState = useMemo(
     () => ({
       history: historyManager.history,
+      historyManager,
       isThemeDialogOpen,
+      shouldShowRetentionWarning:
+        shouldShowRetentionWarning && retentionCheckComplete,
+      sessionsToDeleteCount: sessionsToDeleteCount ?? 0,
       themeError,
       isAuthenticating,
       isConfigInitialized,
       authError,
+      accountSuspensionInfo,
       isAuthDialogOpen,
+      isAwaitingApiKeyInput: authState === AuthState.AwaitingApiKeyInput,
+      apiKeyDefaultValue,
       editorError,
       isEditorDialogOpen,
       showPrivacyNotice,
@@ -933,45 +2220,70 @@ Logging in with Google... Please restart Gemini CLI to continue.
       debugMessage,
       quittingMessages,
       isSettingsDialogOpen,
+      isSessionBrowserOpen,
+      isModelDialogOpen,
+      isAgentConfigDialogOpen,
+      selectedAgentName,
+      selectedAgentDisplayName,
+      selectedAgentDefinition,
+      isPermissionsDialogOpen,
+      permissionsDialogProps,
       slashCommands,
       pendingSlashCommandHistoryItems,
       commandContext,
-      shellConfirmationRequest,
-      confirmationRequest,
+      commandConfirmationRequest,
+      authConsentRequest,
+      confirmUpdateExtensionRequests,
       loopDetectionConfirmationRequest,
+      permissionConfirmationRequest,
       geminiMdFileCount,
       streamingState,
       initError,
       pendingGeminiHistoryItems,
       thought,
       shellModeActive,
-      userMessages,
+      userMessages: inputHistory,
       buffer,
       inputWidth,
       suggestionsWidth,
       isInputActive,
+      isResuming,
       shouldShowIdePrompt,
       isFolderTrustDialogOpen: isFolderTrustDialogOpen ?? false,
+      folderDiscoveryResults,
+      isPolicyUpdateDialogOpen,
+      policyUpdateConfirmationRequest,
       isTrustedFolder,
       constrainHeight,
       showErrorDetails,
+      showFullTodos,
       filteredConsoleMessages,
       ideContextState,
-      showToolDescriptions,
-      ctrlCPressedOnce,
-      ctrlDPressedOnce,
+      renderMarkdown,
+      ctrlCPressedOnce: ctrlCPressCount >= 1,
+      ctrlDPressedOnce: ctrlDPressCount >= 1,
       showEscapePrompt,
+      shortcutsHelpVisible,
+      cleanUiDetailsVisible,
       isFocused,
       elapsedTime,
       currentLoadingPhrase,
       historyRemountKey,
+      activeHooks,
       messageQueue,
-      showAutoAcceptIndicator,
-      showWorkspaceMigrationDialog,
-      workspaceExtensions,
+      queueErrorMessage,
+      showApprovalModeIndicator,
+      allowPlanMode,
       currentModel,
-      userTier,
-      proQuotaRequest,
+      quota: {
+        userTier,
+        stats: quotaStats,
+        proQuotaRequest,
+        validationRequest,
+        // G1 AI Credits dialog state
+        overageMenuRequest,
+        emptyWalletRequest,
+      },
       contextFileNames,
       errorCount,
       availableTerminalHeight,
@@ -986,18 +2298,50 @@ Logging in with Google... Please restart Gemini CLI to continue.
       terminalWidth,
       terminalHeight,
       mainControlsRef,
+      rootUiRef,
       currentIDE,
       updateInfo,
       showIdeRestartPrompt,
+      ideTrustRestartReason,
       isRestarting,
+      extensionsUpdateState,
+      activePtyId,
+      backgroundShellCount,
+      isBackgroundShellVisible,
+      embeddedShellFocused,
+      showDebugProfiler,
+      customDialog,
+      copyModeEnabled,
+      transientMessage,
+      bannerData,
+      bannerVisible,
+      terminalBackgroundColor: config.getTerminalBackground(),
+      settingsNonce,
+      backgroundShells,
+      activeBackgroundShellPid,
+      backgroundShellHeight,
+      isBackgroundShellListOpen,
+      adminSettingsChanged,
+      newAgents,
+      showIsExpandableHint,
+      hintMode:
+        config.isModelSteeringEnabled() &&
+        isToolExecuting([
+          ...pendingSlashCommandHistoryItems,
+          ...pendingGeminiHistoryItems,
+        ]),
+      hintBuffer: '',
     }),
     [
-      historyManager.history,
       isThemeDialogOpen,
+      shouldShowRetentionWarning,
+      retentionCheckComplete,
+      sessionsToDeleteCount,
       themeError,
       isAuthenticating,
       isConfigInitialized,
       authError,
+      accountSuspensionInfo,
       isAuthDialogOpen,
       editorError,
       isEditorDialogOpen,
@@ -1006,44 +2350,66 @@ Logging in with Google... Please restart Gemini CLI to continue.
       debugMessage,
       quittingMessages,
       isSettingsDialogOpen,
+      isSessionBrowserOpen,
+      isModelDialogOpen,
+      isAgentConfigDialogOpen,
+      selectedAgentName,
+      selectedAgentDisplayName,
+      selectedAgentDefinition,
+      isPermissionsDialogOpen,
+      permissionsDialogProps,
       slashCommands,
       pendingSlashCommandHistoryItems,
       commandContext,
-      shellConfirmationRequest,
-      confirmationRequest,
+      commandConfirmationRequest,
+      authConsentRequest,
+      confirmUpdateExtensionRequests,
       loopDetectionConfirmationRequest,
+      permissionConfirmationRequest,
       geminiMdFileCount,
       streamingState,
       initError,
       pendingGeminiHistoryItems,
       thought,
       shellModeActive,
-      userMessages,
+      inputHistory,
       buffer,
       inputWidth,
       suggestionsWidth,
       isInputActive,
+      isResuming,
       shouldShowIdePrompt,
       isFolderTrustDialogOpen,
+      folderDiscoveryResults,
+      isPolicyUpdateDialogOpen,
+      policyUpdateConfirmationRequest,
       isTrustedFolder,
       constrainHeight,
       showErrorDetails,
+      showFullTodos,
       filteredConsoleMessages,
       ideContextState,
-      showToolDescriptions,
-      ctrlCPressedOnce,
-      ctrlDPressedOnce,
+      renderMarkdown,
+      ctrlCPressCount,
+      ctrlDPressCount,
       showEscapePrompt,
+      shortcutsHelpVisible,
+      cleanUiDetailsVisible,
       isFocused,
       elapsedTime,
       currentLoadingPhrase,
       historyRemountKey,
+      activeHooks,
       messageQueue,
-      showAutoAcceptIndicator,
-      showWorkspaceMigrationDialog,
-      workspaceExtensions,
+      queueErrorMessage,
+      showApprovalModeIndicator,
+      allowPlanMode,
       userTier,
+      quotaStats,
       proQuotaRequest,
+      validationRequest,
+      overageMenuRequest,
+      emptyWalletRequest,
       contextFileNames,
       errorCount,
       availableTerminalHeight,
@@ -1058,61 +2424,206 @@ Logging in with Google... Please restart Gemini CLI to continue.
       terminalWidth,
       terminalHeight,
       mainControlsRef,
+      rootUiRef,
       currentIDE,
       updateInfo,
       showIdeRestartPrompt,
+      ideTrustRestartReason,
       isRestarting,
       currentModel,
+      extensionsUpdateState,
+      activePtyId,
+      backgroundShellCount,
+      isBackgroundShellVisible,
+      historyManager,
+      embeddedShellFocused,
+      showDebugProfiler,
+      customDialog,
+      apiKeyDefaultValue,
+      authState,
+      copyModeEnabled,
+      transientMessage,
+      bannerData,
+      bannerVisible,
+      config,
+      settingsNonce,
+      backgroundShellHeight,
+      isBackgroundShellListOpen,
+      activeBackgroundShellPid,
+      backgroundShells,
+      adminSettingsChanged,
+      newAgents,
+      showIsExpandableHint,
     ],
+  );
+
+  const exitPrivacyNotice = useCallback(
+    () => setShowPrivacyNotice(false),
+    [setShowPrivacyNotice],
   );
 
   const uiActions: UIActions = useMemo(
     () => ({
       handleThemeSelect,
+      closeThemeDialog,
       handleThemeHighlight,
       handleAuthSelect,
       setAuthState,
       onAuthError,
       handleEditorSelect,
       exitEditorDialog,
-      exitPrivacyNotice: () => setShowPrivacyNotice(false),
+      exitPrivacyNotice,
       closeSettingsDialog,
+      closeModelDialog,
+      openAgentConfigDialog,
+      closeAgentConfigDialog,
+      openPermissionsDialog,
+      closePermissionsDialog,
       setShellModeActive,
       vimHandleInput,
       handleIdePromptComplete,
       handleFolderTrustSelect,
+      setIsPolicyUpdateDialogOpen,
       setConstrainHeight,
       onEscapePromptChange: handleEscapePromptChange,
       refreshStatic,
       handleFinalSubmit,
       handleClearScreen,
-      onWorkspaceMigrationDialogOpen,
-      onWorkspaceMigrationDialogClose,
       handleProQuotaChoice,
+      handleValidationChoice,
+      // G1 AI Credits handlers
+      handleOverageMenuChoice,
+      handleEmptyWalletChoice,
+      openSessionBrowser,
+      closeSessionBrowser,
+      handleResumeSession,
+      handleDeleteSession,
+      setQueueErrorMessage,
+      popAllMessages,
+      handleApiKeySubmit,
+      handleApiKeyCancel,
+      setBannerVisible,
+      setShortcutsHelpVisible,
+      setCleanUiDetailsVisible,
+      toggleCleanUiDetailsVisible,
+      revealCleanUiDetailsTemporarily,
+      handleWarning,
+      setEmbeddedShellFocused,
+      dismissBackgroundShell,
+      setActiveBackgroundShellPid,
+      setIsBackgroundShellListOpen,
+      setAuthContext,
+      onHintInput: () => {},
+      onHintBackspace: () => {},
+      onHintClear: () => {},
+      onHintSubmit: () => {},
+      handleRestart: async () => {
+        if (process.send) {
+          const remoteSettings = config.getRemoteAdminSettings();
+          if (remoteSettings) {
+            process.send({
+              type: 'admin-settings-update',
+              settings: remoteSettings,
+            });
+          }
+        }
+        await runExitCleanup();
+        process.exit(RELAUNCH_EXIT_CODE);
+      },
+      handleNewAgentsSelect: async (choice: NewAgentsChoice) => {
+        if (newAgents && choice === NewAgentsChoice.ACKNOWLEDGE) {
+          const registry = config.getAgentRegistry();
+          try {
+            await Promise.all(
+              newAgents.map((agent) => registry.acknowledgeAgent(agent)),
+            );
+          } catch (error) {
+            debugLogger.error('Failed to acknowledge agents:', error);
+            historyManager.addItem(
+              {
+                type: MessageType.ERROR,
+                text: `Failed to acknowledge agents: ${getErrorMessage(error)}`,
+              },
+              Date.now(),
+            );
+          }
+        }
+        setNewAgents(null);
+      },
+      getPreferredEditor,
+      clearAccountSuspension: () => {
+        setAccountSuspensionInfo(null);
+        setAuthState(AuthState.Updating);
+      },
     }),
     [
       handleThemeSelect,
+      closeThemeDialog,
       handleThemeHighlight,
       handleAuthSelect,
       setAuthState,
       onAuthError,
       handleEditorSelect,
       exitEditorDialog,
+      exitPrivacyNotice,
       closeSettingsDialog,
+      closeModelDialog,
+      openAgentConfigDialog,
+      closeAgentConfigDialog,
+      openPermissionsDialog,
+      closePermissionsDialog,
       setShellModeActive,
       vimHandleInput,
       handleIdePromptComplete,
       handleFolderTrustSelect,
+      setIsPolicyUpdateDialogOpen,
       setConstrainHeight,
       handleEscapePromptChange,
       refreshStatic,
       handleFinalSubmit,
       handleClearScreen,
-      onWorkspaceMigrationDialogOpen,
-      onWorkspaceMigrationDialogClose,
       handleProQuotaChoice,
+      handleValidationChoice,
+      handleOverageMenuChoice,
+      handleEmptyWalletChoice,
+      openSessionBrowser,
+      closeSessionBrowser,
+      handleResumeSession,
+      handleDeleteSession,
+      setQueueErrorMessage,
+      popAllMessages,
+      handleApiKeySubmit,
+      handleApiKeyCancel,
+      setBannerVisible,
+      setShortcutsHelpVisible,
+      setCleanUiDetailsVisible,
+      toggleCleanUiDetailsVisible,
+      revealCleanUiDetailsTemporarily,
+      handleWarning,
+      setEmbeddedShellFocused,
+      dismissBackgroundShell,
+      setActiveBackgroundShellPid,
+      setIsBackgroundShellListOpen,
+      setAuthContext,
+      setAccountSuspensionInfo,
+      newAgents,
+      config,
+      historyManager,
+      getPreferredEditor,
     ],
   );
+
+  if (authState === AuthState.AwaitingGoogleLoginRestart) {
+    return (
+      <LoginWithGoogleRestartDialog
+        onDismiss={() => {
+          setAuthContext({});
+          setAuthState(AuthState.Updating);
+        }}
+        config={config}
+      />
+    );
+  }
 
   return (
     <UIStateContext.Provider value={uiState}>
@@ -1124,7 +2635,11 @@ Logging in with Google... Please restart Gemini CLI to continue.
               startupWarnings: props.startupWarnings || [],
             }}
           >
-            <App />
+            <ToolActionsProvider config={config} toolCalls={allToolCalls}>
+              <ShellFocusContext.Provider value={isFocused}>
+                <App key={`app-${forceRerenderKey}`} />
+              </ShellFocusContext.Provider>
+            </ToolActionsProvider>
           </AppContext.Provider>
         </ConfigContext.Provider>
       </UIActionsContext.Provider>

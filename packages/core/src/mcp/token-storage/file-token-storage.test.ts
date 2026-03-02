@@ -9,6 +9,7 @@ import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { FileTokenStorage } from './file-token-storage.js';
 import type { OAuthCredentials } from './types.js';
+import { GEMINI_DIR } from '../../utils/paths.js';
 
 vi.mock('node:fs', () => ({
   promises: {
@@ -16,6 +17,7 @@ vi.mock('node:fs', () => ({
     writeFile: vi.fn(),
     unlink: vi.fn(),
     mkdir: vi.fn(),
+    rename: vi.fn(),
   },
 }));
 
@@ -37,6 +39,7 @@ describe('FileTokenStorage', () => {
     writeFile: ReturnType<typeof vi.fn>;
     unlink: ReturnType<typeof vi.fn>;
     mkdir: ReturnType<typeof vi.fn>;
+    rename: ReturnType<typeof vi.fn>;
   };
   const existingCredentials: OAuthCredentials = {
     serverName: 'existing-server',
@@ -57,12 +60,11 @@ describe('FileTokenStorage', () => {
   });
 
   describe('getCredentials', () => {
-    it('should throw error when file does not exist', async () => {
+    it('should return null when file does not exist', async () => {
       mockFs.readFile.mockRejectedValue({ code: 'ENOENT' });
 
-      await expect(storage.getCredentials('test-server')).rejects.toThrow(
-        'Token file does not exist',
-      );
+      const result = await storage.getCredentials('test-server');
+      expect(result).toBeNull();
     });
 
     it('should return null for expired tokens', async () => {
@@ -105,12 +107,48 @@ describe('FileTokenStorage', () => {
       expect(result).toEqual(credentials);
     });
 
-    it('should throw error for corrupted files', async () => {
+    it('should throw error with file path when file is corrupted', async () => {
       mockFs.readFile.mockResolvedValue('corrupted-data');
 
-      await expect(storage.getCredentials('test-server')).rejects.toThrow(
-        'Token file corrupted',
-      );
+      try {
+        await storage.getCredentials('test-server');
+        expect.fail('Expected error to be thrown');
+      } catch (error) {
+        expect(error).toBeInstanceOf(Error);
+        const err = error as Error;
+        expect(err.message).toContain('Corrupted token file detected at:');
+        expect(err.message).toContain('mcp-oauth-tokens-v2.json');
+        expect(err.message).toContain('delete or rename');
+      }
+    });
+  });
+
+  describe('auth type switching', () => {
+    it('should throw error when trying to save credentials with corrupted file', async () => {
+      // Simulate corrupted file on first read
+      mockFs.readFile.mockResolvedValue('corrupted-data');
+
+      // Try to save new credentials (simulating switch from OAuth to API key)
+      const newCredentials: OAuthCredentials = {
+        serverName: 'new-auth-server',
+        token: {
+          accessToken: 'new-api-key',
+          tokenType: 'ApiKey',
+        },
+        updatedAt: Date.now(),
+      };
+
+      // Should throw error with file path
+      try {
+        await storage.setCredentials(newCredentials);
+        expect.fail('Expected error to be thrown');
+      } catch (error) {
+        expect(error).toBeInstanceOf(Error);
+        const err = error as Error;
+        expect(err.message).toContain('Corrupted token file detected at:');
+        expect(err.message).toContain('mcp-oauth-tokens-v2.json');
+        expect(err.message).toContain('delete or rename');
+      }
     });
   });
 
@@ -135,7 +173,7 @@ describe('FileTokenStorage', () => {
       await storage.setCredentials(credentials);
 
       expect(mockFs.mkdir).toHaveBeenCalledWith(
-        path.join('/home/test', '.gemini'),
+        path.join('/home/test', GEMINI_DIR),
         { recursive: true, mode: 0o700 },
       );
       expect(mockFs.writeFile).toHaveBeenCalled();
@@ -178,7 +216,7 @@ describe('FileTokenStorage', () => {
       mockFs.readFile.mockRejectedValue({ code: 'ENOENT' });
 
       await expect(storage.deleteCredentials('test-server')).rejects.toThrow(
-        'Token file does not exist',
+        'No credentials found for test-server',
       );
     });
 
@@ -201,7 +239,7 @@ describe('FileTokenStorage', () => {
       await storage.deleteCredentials('test-server');
 
       expect(mockFs.unlink).toHaveBeenCalledWith(
-        path.join('/home/test', '.gemini', 'mcp-oauth-tokens-v2.json'),
+        path.join('/home/test', GEMINI_DIR, 'mcp-oauth-tokens-v2.json'),
       );
     });
 
@@ -245,12 +283,11 @@ describe('FileTokenStorage', () => {
   });
 
   describe('listServers', () => {
-    it('should throw error when file does not exist', async () => {
+    it('should return empty list when file does not exist', async () => {
       mockFs.readFile.mockRejectedValue({ code: 'ENOENT' });
 
-      await expect(storage.listServers()).rejects.toThrow(
-        'Token file does not exist',
-      );
+      const result = await storage.listServers();
+      expect(result).toEqual([]);
     });
 
     it('should return list of server names', async () => {
@@ -282,7 +319,7 @@ describe('FileTokenStorage', () => {
       await storage.clearAll();
 
       expect(mockFs.unlink).toHaveBeenCalledWith(
-        path.join('/home/test', '.gemini', 'mcp-oauth-tokens-v2.json'),
+        path.join('/home/test', GEMINI_DIR, 'mcp-oauth-tokens-v2.json'),
       );
     });
 

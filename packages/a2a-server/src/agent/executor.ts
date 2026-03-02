@@ -12,24 +12,24 @@ import type {
   RequestContext,
   ExecutionEventBus,
 } from '@a2a-js/sdk/server';
-import type {
-  ToolCallRequestInfo,
-  ServerGeminiToolCallRequestEvent,
-  Config,
+import {
+  GeminiEventType,
+  SimpleExtensionLoader,
+  type ToolCallRequestInfo,
+  type Config,
 } from '@google/gemini-cli-core';
-import { GeminiEventType } from '@google/gemini-cli-core';
 import { v4 as uuidv4 } from 'uuid';
 
 import { logger } from '../utils/logger.js';
-import type {
-  StateChange,
-  AgentSettings,
-  PersistedStateMetadata,
-} from '../types.js';
 import {
   CoderAgentEvent,
   getPersistedState,
   setPersistedState,
+  type StateChange,
+  type AgentSettings,
+  type PersistedStateMetadata,
+  getContextIdFromMetadata,
+  getAgentSettingsFromMetadata,
 } from '../types.js';
 import { loadConfig, loadEnvironment, setTargetDir } from '../config/config.js';
 import { loadSettings } from '../config/settings.js';
@@ -96,7 +96,7 @@ export class CoderAgentExecutor implements AgentExecutor {
     loadEnvironment(); // Will override any global env with workspace envs
     const settings = loadSettings(workspaceRoot);
     const extensions = loadExtensions(workspaceRoot);
-    return await loadConfig(settings, extensions, taskId);
+    return loadConfig(settings, new SimpleExtensionLoader(extensions), taskId);
   }
 
   /**
@@ -118,12 +118,13 @@ export class CoderAgentExecutor implements AgentExecutor {
     const agentSettings = persistedState._agentSettings;
     const config = await this.getConfig(agentSettings, sdkTask.id);
     const contextId: string =
-      (metadata['_contextId'] as string) || sdkTask.contextId;
+      getContextIdFromMetadata(metadata) || sdkTask.contextId;
     const runtimeTask = await Task.create(
       sdkTask.id,
       contextId,
       config,
       eventBus,
+      agentSettings.autoExecute,
     );
     runtimeTask.taskState = persistedState._taskState;
     await runtimeTask.geminiClient.initialize();
@@ -140,9 +141,18 @@ export class CoderAgentExecutor implements AgentExecutor {
     agentSettingsInput?: AgentSettings,
     eventBus?: ExecutionEventBus,
   ): Promise<TaskWrapper> {
-    const agentSettings = agentSettingsInput || ({} as AgentSettings);
+    const agentSettings: AgentSettings = agentSettingsInput || {
+      kind: CoderAgentEvent.StateAgentSettingsEvent,
+      workspacePath: process.cwd(),
+    };
     const config = await this.getConfig(agentSettings, taskId);
-    const runtimeTask = await Task.create(taskId, contextId, config, eventBus);
+    const runtimeTask = await Task.create(
+      taskId,
+      contextId,
+      config,
+      eventBus,
+      agentSettings.autoExecute,
+    );
     await runtimeTask.geminiClient.initialize();
 
     const wrapper = new TaskWrapper(runtimeTask, agentSettings);
@@ -277,14 +287,14 @@ export class CoderAgentExecutor implements AgentExecutor {
     requestContext: RequestContext,
     eventBus: ExecutionEventBus,
   ): Promise<void> {
-    const userMessage = requestContext.userMessage as Message;
-    const sdkTask = requestContext.task as SDKTask | undefined;
+    const userMessage = requestContext.userMessage;
+    const sdkTask = requestContext.task;
 
     const taskId = sdkTask?.id || userMessage.taskId || uuidv4();
     const contextId: string =
       userMessage.contextId ||
       sdkTask?.contextId ||
-      (sdkTask?.metadata?.['_contextId'] as string) ||
+      getContextIdFromMetadata(sdkTask?.metadata) ||
       uuidv4();
 
     logger.info(
@@ -379,9 +389,7 @@ export class CoderAgentExecutor implements AgentExecutor {
       }
     } else {
       logger.info(`[CoderAgentExecutor] Creating new task ${taskId}.`);
-      const agentSettings = userMessage.metadata?.[
-        'coderAgent'
-      ] as AgentSettings;
+      const agentSettings = getAgentSettingsFromMetadata(userMessage.metadata);
       try {
         wrapper = await this.createTask(
           taskId,
@@ -394,6 +402,7 @@ export class CoderAgentExecutor implements AgentExecutor {
           `[CoderAgentExecutor] Error creating task ${taskId}:`,
           error,
         );
+        // eslint-disable-next-line @typescript-eslint/no-floating-promises
         pushTaskStateFailed(error, eventBus, taskId, contextId);
         return;
       }
@@ -474,9 +483,7 @@ export class CoderAgentExecutor implements AgentExecutor {
             throw new Error('Execution aborted');
           }
           if (event.type === GeminiEventType.ToolCallRequest) {
-            toolCallRequests.push(
-              (event as ServerGeminiToolCallRequestEvent).value,
-            );
+            toolCallRequests.push(event.value);
             continue;
           }
           await currentTask.acceptAgentMessage(event);

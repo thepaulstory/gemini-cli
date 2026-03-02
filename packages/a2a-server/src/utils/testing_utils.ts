@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import * as path from 'node:path';
 import type {
   Task as SDKTask,
   TaskStatusUpdateEvent,
@@ -11,34 +12,47 @@ import type {
 } from '@a2a-js/sdk';
 import {
   ApprovalMode,
-  DEFAULT_TRUNCATE_TOOL_OUTPUT_LINES,
+  DEFAULT_GEMINI_MODEL,
   DEFAULT_TRUNCATE_TOOL_OUTPUT_THRESHOLD,
   GeminiClient,
+  HookSystem,
+  PolicyDecision,
+  tmpdir,
+  type Config,
+  type Storage,
 } from '@google/gemini-cli-core';
-import type { Config, Storage } from '@google/gemini-cli-core';
+import { createMockMessageBus } from '@google/gemini-cli-core/src/test-utils/mock-message-bus.js';
 import { expect, vi } from 'vitest';
 
 export function createMockConfig(
   overrides: Partial<Config> = {},
 ): Partial<Config> {
+  const tmpDir = tmpdir();
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
   const mockConfig = {
     getToolRegistry: vi.fn().mockReturnValue({
       getTool: vi.fn(),
       getAllToolNames: vi.fn().mockReturnValue([]),
+      getAllTools: vi.fn().mockReturnValue([]),
+      getToolsByServer: vi.fn().mockReturnValue([]),
     }),
     getApprovalMode: vi.fn().mockReturnValue(ApprovalMode.DEFAULT),
     getIdeMode: vi.fn().mockReturnValue(false),
+    isInteractive: () => true,
     getAllowedTools: vi.fn().mockReturnValue([]),
     getWorkspaceContext: vi.fn().mockReturnValue({
       isPathWithinWorkspace: () => true,
     }),
-    getTargetDir: () => '/test',
+    getTargetDir: () => tmpDir,
+    getCheckpointingEnabled: vi.fn().mockReturnValue(false),
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     storage: {
-      getProjectTempDir: () => '/tmp',
+      getProjectTempDir: () => tmpDir,
+      getProjectTempCheckpointsDir: () => path.join(tmpDir, 'checkpoints'),
     } as Storage,
     getTruncateToolOutputThreshold: () =>
       DEFAULT_TRUNCATE_TOOL_OUTPUT_THRESHOLD,
-    getTruncateToolOutputLines: () => DEFAULT_TRUNCATE_TOOL_OUTPUT_LINES,
+    getActiveModel: vi.fn().mockReturnValue(DEFAULT_GEMINI_MODEL),
     getDebugMode: vi.fn().mockReturnValue(false),
     getContentGeneratorConfig: vi.fn().mockReturnValue({ model: 'gemini-pro' }),
     getModel: vi.fn().mockReturnValue('gemini-pro'),
@@ -50,12 +64,36 @@ export function createMockConfig(
     getEmbeddingModel: vi.fn().mockReturnValue('text-embedding-004'),
     getSessionId: vi.fn().mockReturnValue('test-session-id'),
     getUserTier: vi.fn(),
+    getMessageBus: vi.fn(),
+    getPolicyEngine: vi.fn(),
+    getEnableExtensionReloading: vi.fn().mockReturnValue(false),
+    getEnableHooks: vi.fn().mockReturnValue(false),
+    getMcpClientManager: vi.fn().mockReturnValue({
+      getMcpServers: vi.fn().mockReturnValue({}),
+    }),
+    getGitService: vi.fn(),
+    validatePathAccess: vi.fn().mockReturnValue(undefined),
     ...overrides,
   } as unknown as Config;
+  mockConfig.getMessageBus = vi.fn().mockReturnValue(createMockMessageBus());
+  mockConfig.getHookSystem = vi
+    .fn()
+    .mockReturnValue(new HookSystem(mockConfig));
 
   mockConfig.getGeminiClient = vi
     .fn()
     .mockReturnValue(new GeminiClient(mockConfig));
+
+  mockConfig.getPolicyEngine = vi.fn().mockReturnValue({
+    check: async () => {
+      const mode = mockConfig.getApprovalMode();
+      if (mode === ApprovalMode.YOLO) {
+        return { decision: PolicyDecision.ALLOW };
+      }
+      return { decision: PolicyDecision.ASK_USER };
+    },
+  });
+
   return mockConfig;
 }
 
@@ -114,6 +152,7 @@ export function assertUniqueFinalEventIsLast(
   events: SendStreamingMessageSuccessResponse[],
 ) {
   // Final event is input-required & final
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
   const finalEvent = events[events.length - 1].result as TaskStatusUpdateEvent;
   expect(finalEvent.metadata?.['coderAgent']).toMatchObject({
     kind: 'state-change',
@@ -123,9 +162,11 @@ export function assertUniqueFinalEventIsLast(
 
   // There is only one event with final and its the last
   expect(
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     events.filter((e) => (e.result as TaskStatusUpdateEvent).final).length,
   ).toBe(1);
   expect(
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     events.findIndex((e) => (e.result as TaskStatusUpdateEvent).final),
   ).toBe(events.length - 1);
 }
@@ -134,11 +175,13 @@ export function assertTaskCreationAndWorkingStatus(
   events: SendStreamingMessageSuccessResponse[],
 ) {
   // Initial task creation event
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
   const taskEvent = events[0].result as SDKTask;
   expect(taskEvent.kind).toBe('task');
   expect(taskEvent.status.state).toBe('submitted');
 
   // Status update: working
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
   const workingEvent = events[1].result as TaskStatusUpdateEvent;
   expect(workingEvent.kind).toBe('status-update');
   expect(workingEvent.status.state).toBe('working');

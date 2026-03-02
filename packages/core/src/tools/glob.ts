@@ -4,17 +4,21 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import type { MessageBus } from '../confirmation-bus/message-bus.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { glob, escape } from 'glob';
 import type { ToolInvocation, ToolResult } from './tools.js';
 import { BaseDeclarativeTool, BaseToolInvocation, Kind } from './tools.js';
 import { shortenPath, makeRelative } from '../utils/paths.js';
-import {
-  type Config,
-  DEFAULT_FILE_FILTERING_OPTIONS,
-} from '../config/config.js';
+import { type Config } from '../config/config.js';
+import { DEFAULT_FILE_FILTERING_OPTIONS } from '../config/constants.js';
 import { ToolErrorType } from './tool-error.js';
+import { GLOB_TOOL_NAME, GLOB_DISPLAY_NAME } from './tool-names.js';
+import { getErrorMessage } from '../utils/errors.js';
+import { debugLogger } from '../utils/debugLogger.js';
+import { GLOB_DEFINITION } from './definitions/coreTools.js';
+import { resolveToolDeclaration } from './definitions/resolver.js';
 
 // Subset of 'Path' interface provided by 'glob' that we can implement for testing
 export interface GlobPath {
@@ -64,7 +68,7 @@ export interface GlobToolParams {
   /**
    * The directory to search in (optional, defaults to current directory)
    */
-  path?: string;
+  dir_path?: string;
 
   /**
    * Whether the search should be case-sensitive (optional, defaults to false)
@@ -89,16 +93,19 @@ class GlobToolInvocation extends BaseToolInvocation<
   constructor(
     private config: Config,
     params: GlobToolParams,
+    messageBus: MessageBus,
+    _toolName?: string,
+    _toolDisplayName?: string,
   ) {
-    super(params);
+    super(params, messageBus, _toolName, _toolDisplayName);
   }
 
   getDescription(): string {
     let description = `'${this.params.pattern}'`;
-    if (this.params.path) {
+    if (this.params.dir_path) {
       const searchDir = path.resolve(
         this.config.getTargetDir(),
-        this.params.path || '.',
+        this.params.dir_path || '.',
       );
       const relativePath = makeRelative(searchDir, this.config.getTargetDir());
       description += ` within ${shortenPath(relativePath)}`;
@@ -113,18 +120,21 @@ class GlobToolInvocation extends BaseToolInvocation<
 
       // If a specific path is provided, resolve it and check if it's within workspace
       let searchDirectories: readonly string[];
-      if (this.params.path) {
+      if (this.params.dir_path) {
         const searchDirAbsolute = path.resolve(
           this.config.getTargetDir(),
-          this.params.path,
+          this.params.dir_path,
         );
-        if (!workspaceContext.isPathWithinWorkspace(searchDirAbsolute)) {
-          const rawError = `Error: Path "${this.params.path}" is not within any workspace directory`;
+        const validationError = this.config.validatePathAccess(
+          searchDirAbsolute,
+          'read',
+        );
+        if (validationError) {
           return {
-            llmContent: rawError,
-            returnDisplay: `Path is not within workspace`,
+            llmContent: validationError,
+            returnDisplay: 'Path not in workspace.',
             error: {
-              message: rawError,
+              message: validationError,
               type: ToolErrorType.PATH_NOT_IN_WORKSPACE,
             },
           };
@@ -166,7 +176,7 @@ class GlobToolInvocation extends BaseToolInvocation<
         path.relative(this.config.getTargetDir(), p.fullpath()),
       );
 
-      const { filteredPaths, gitIgnoredCount, geminiIgnoredCount } =
+      const { filteredPaths, ignoredCount } =
         fileDiscovery.filterFilesWithReport(relativePaths, {
           respectGitIgnore:
             this.params?.respect_git_ignore ??
@@ -193,11 +203,8 @@ class GlobToolInvocation extends BaseToolInvocation<
         } else {
           message += ` within ${searchDirectories.length} workspace directories`;
         }
-        if (gitIgnoredCount > 0) {
-          message += ` (${gitIgnoredCount} files were git-ignored)`;
-        }
-        if (geminiIgnoredCount > 0) {
-          message += ` (${geminiIgnoredCount} files were gemini-ignored)`;
+        if (ignoredCount > 0) {
+          message += ` (${ignoredCount} files were ignored)`;
         }
         return {
           llmContent: message,
@@ -228,11 +235,8 @@ class GlobToolInvocation extends BaseToolInvocation<
       } else {
         resultMessage += ` across ${searchDirectories.length} workspace directories`;
       }
-      if (gitIgnoredCount > 0) {
-        resultMessage += ` (${gitIgnoredCount} additional files were git-ignored)`;
-      }
-      if (geminiIgnoredCount > 0) {
-        resultMessage += ` (${geminiIgnoredCount} additional files were gemini-ignored)`;
+      if (ignoredCount > 0) {
+        resultMessage += ` (${ignoredCount} additional files were ignored)`;
       }
       resultMessage += `, sorted by modification time (newest first):\n${fileListDescription}`;
 
@@ -241,9 +245,8 @@ class GlobToolInvocation extends BaseToolInvocation<
         returnDisplay: `Found ${fileCount} matching file(s)`,
       };
     } catch (error) {
-      const errorMessage =
-        error instanceof Error ? error.message : String(error);
-      console.error(`GlobLogic execute Error: ${errorMessage}`, error);
+      debugLogger.warn(`GlobLogic execute Error`, error);
+      const errorMessage = getErrorMessage(error);
       const rawError = `Error during glob search operation: ${errorMessage}`;
       return {
         llmContent: rawError,
@@ -261,45 +264,20 @@ class GlobToolInvocation extends BaseToolInvocation<
  * Implementation of the Glob tool logic
  */
 export class GlobTool extends BaseDeclarativeTool<GlobToolParams, ToolResult> {
-  static readonly Name = 'glob';
-
-  constructor(private config: Config) {
+  static readonly Name = GLOB_TOOL_NAME;
+  constructor(
+    private config: Config,
+    messageBus: MessageBus,
+  ) {
     super(
       GlobTool.Name,
-      'FindFiles',
-      'Efficiently finds files matching specific glob patterns (e.g., `src/**/*.ts`, `**/*.md`), returning absolute paths sorted by modification time (newest first). Ideal for quickly locating files based on their name or path structure, especially in large codebases.',
+      GLOB_DISPLAY_NAME,
+      GLOB_DEFINITION.base.description!,
       Kind.Search,
-      {
-        properties: {
-          pattern: {
-            description:
-              "The glob pattern to match against (e.g., '**/*.py', 'docs/*.md').",
-            type: 'string',
-          },
-          path: {
-            description:
-              'Optional: The absolute path to the directory to search within. If omitted, searches the root directory.',
-            type: 'string',
-          },
-          case_sensitive: {
-            description:
-              'Optional: Whether the search should be case-sensitive. Defaults to false.',
-            type: 'boolean',
-          },
-          respect_git_ignore: {
-            description:
-              'Optional: Whether to respect .gitignore patterns when finding files. Only available in git repositories. Defaults to true.',
-            type: 'boolean',
-          },
-          respect_gemini_ignore: {
-            description:
-              'Optional: Whether to respect .geminiignore patterns when finding files. Defaults to true.',
-            type: 'boolean',
-          },
-        },
-        required: ['pattern'],
-        type: 'object',
-      },
+      GLOB_DEFINITION.base.parametersJsonSchema,
+      messageBus,
+      true,
+      false,
     );
   }
 
@@ -311,13 +289,15 @@ export class GlobTool extends BaseDeclarativeTool<GlobToolParams, ToolResult> {
   ): string | null {
     const searchDirAbsolute = path.resolve(
       this.config.getTargetDir(),
-      params.path || '.',
+      params.dir_path || '.',
     );
 
-    const workspaceContext = this.config.getWorkspaceContext();
-    if (!workspaceContext.isPathWithinWorkspace(searchDirAbsolute)) {
-      const directories = workspaceContext.getDirectories();
-      return `Search path ("${searchDirAbsolute}") resolves outside the allowed workspace directories: ${directories.join(', ')}`;
+    const validationError = this.config.validatePathAccess(
+      searchDirAbsolute,
+      'read',
+    );
+    if (validationError) {
+      return validationError;
     }
 
     const targetDir = searchDirAbsolute || this.config.getTargetDir();
@@ -345,7 +325,20 @@ export class GlobTool extends BaseDeclarativeTool<GlobToolParams, ToolResult> {
 
   protected createInvocation(
     params: GlobToolParams,
+    messageBus: MessageBus,
+    _toolName?: string,
+    _toolDisplayName?: string,
   ): ToolInvocation<GlobToolParams, ToolResult> {
-    return new GlobToolInvocation(this.config, params);
+    return new GlobToolInvocation(
+      this.config,
+      params,
+      messageBus,
+      _toolName,
+      _toolDisplayName,
+    );
+  }
+
+  override getSchema(modelId?: string) {
+    return resolveToolDeclaration(GLOB_DEFINITION, modelId);
   }
 }

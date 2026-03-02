@@ -8,6 +8,8 @@ import { BaseTokenStorage } from './base-token-storage.js';
 import { FileTokenStorage } from './file-token-storage.js';
 import type { TokenStorage, OAuthCredentials } from './types.js';
 import { TokenStorageType } from './types.js';
+import { coreEvents } from '../../utils/events.js';
+import { TokenStorageInitializationEvent } from '../../telemetry/types.js';
 
 const FORCE_FILE_STORAGE_ENV_VAR = 'GEMINI_FORCE_FILE_STORAGE';
 
@@ -34,6 +36,11 @@ export class HybridTokenStorage extends BaseTokenStorage {
         if (isAvailable) {
           this.storage = keychainStorage;
           this.storageType = TokenStorageType.KEYCHAIN;
+
+          coreEvents.emitTelemetryTokenStorageType(
+            new TokenStorageInitializationEvent('keychain', forceFileStorage),
+          );
+
           return this.storage;
         }
       } catch (_e) {
@@ -43,6 +50,11 @@ export class HybridTokenStorage extends BaseTokenStorage {
 
     this.storage = new FileTokenStorage(this.serviceName);
     this.storageType = TokenStorageType.ENCRYPTED_FILE;
+
+    coreEvents.emitTelemetryTokenStorageType(
+      new TokenStorageInitializationEvent('encrypted_file', forceFileStorage),
+    );
+
     return this.storage;
   }
 
@@ -57,7 +69,7 @@ export class HybridTokenStorage extends BaseTokenStorage {
     }
 
     // Wait for initialization to complete
-    return await this.storageInitPromise;
+    return this.storageInitPromise;
   }
 
   async getCredentials(serverName: string): Promise<OAuthCredentials | null> {

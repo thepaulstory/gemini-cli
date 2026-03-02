@@ -9,18 +9,30 @@ import { useCallback, useState } from 'react';
 import { Box, Text } from 'ink';
 import { theme } from '../semantic-colors.js';
 import { themeManager, DEFAULT_THEME } from '../themes/theme-manager.js';
+import { pickDefaultThemeName, type Theme } from '../themes/theme.js';
 import { RadioButtonSelect } from './shared/RadioButtonSelect.js';
 import { DiffRenderer } from './messages/DiffRenderer.js';
 import { colorizeCode } from '../utils/CodeColorizer.js';
-import type { LoadedSettings } from '../../config/settings.js';
+import type {
+  LoadableSettingScope,
+  LoadedSettings,
+} from '../../config/settings.js';
 import { SettingScope } from '../../config/settings.js';
 import { getScopeMessageForSetting } from '../../utils/dialogScopeUtils.js';
 import { useKeypress } from '../hooks/useKeypress.js';
+import { useAlternateBuffer } from '../hooks/useAlternateBuffer.js';
 import { ScopeSelector } from './shared/ScopeSelector.js';
+import { useUIState } from '../contexts/UIStateContext.js';
 
 interface ThemeDialogProps {
   /** Callback function when a theme is selected */
-  onSelect: (themeName: string | undefined, scope: SettingScope) => void;
+  onSelect: (
+    themeName: string,
+    scope: LoadableSettingScope,
+  ) => void | Promise<void>;
+
+  /** Callback function when the dialog is cancelled */
+  onCancel: () => void;
 
   /** Callback function when a theme is highlighted */
   onHighlight: (themeName: string | undefined) => void;
@@ -30,47 +42,97 @@ interface ThemeDialogProps {
   terminalWidth: number;
 }
 
+import { resolveColor } from '../themes/color-utils.js';
+
+function generateThemeItem(
+  name: string,
+  typeDisplay: string,
+  fullTheme: Theme | undefined,
+  terminalBackgroundColor: string | undefined,
+) {
+  const isCompatible = fullTheme
+    ? themeManager.isThemeCompatible(fullTheme, terminalBackgroundColor)
+    : true;
+
+  const themeBackground = fullTheme
+    ? resolveColor(fullTheme.colors.Background)
+    : undefined;
+
+  const isBackgroundMatch =
+    terminalBackgroundColor &&
+    themeBackground &&
+    terminalBackgroundColor.toLowerCase() === themeBackground.toLowerCase();
+
+  return {
+    label: name,
+    value: name,
+    themeNameDisplay: name,
+    themeTypeDisplay: typeDisplay,
+    themeWarning: isCompatible ? '' : ' (Incompatible)',
+    themeMatch: isBackgroundMatch ? ' (Matches terminal)' : '',
+    key: name,
+    isCompatible,
+  };
+}
+
 export function ThemeDialog({
   onSelect,
+  onCancel,
   onHighlight,
   settings,
   availableTerminalHeight,
   terminalWidth,
 }: ThemeDialogProps): React.JSX.Element {
-  const [selectedScope, setSelectedScope] = useState<SettingScope>(
+  const isAlternateBuffer = useAlternateBuffer();
+  const { terminalBackgroundColor } = useUIState();
+  const [selectedScope, setSelectedScope] = useState<LoadableSettingScope>(
     SettingScope.User,
   );
 
   // Track the currently highlighted theme name
-  const [highlightedThemeName, setHighlightedThemeName] = useState<
-    string | undefined
-  >(settings.merged.ui?.theme || DEFAULT_THEME.name);
+  const [highlightedThemeName, setHighlightedThemeName] = useState<string>(
+    () => {
+      // If a theme is already set, use it.
+      if (settings.merged.ui.theme) {
+        return settings.merged.ui.theme;
+      }
 
-  // Generate theme items filtered by selected scope
-  const customThemes =
-    selectedScope === SettingScope.User
-      ? settings.user.settings.ui?.customThemes || {}
-      : settings.merged.ui?.customThemes || {};
-  const builtInThemes = themeManager
-    .getAvailableThemes()
-    .filter((theme) => theme.type !== 'custom');
-  const customThemeNames = Object.keys(customThemes);
+      // Otherwise, try to pick a theme that matches the terminal background.
+      return pickDefaultThemeName(
+        terminalBackgroundColor,
+        themeManager.getAllThemes(),
+        DEFAULT_THEME.name,
+        'Default Light',
+      );
+    },
+  );
+
   const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
   // Generate theme items
-  const themeItems = [
-    ...builtInThemes.map((theme) => ({
-      label: theme.name,
-      value: theme.name,
-      themeNameDisplay: theme.name,
-      themeTypeDisplay: capitalize(theme.type),
-    })),
-    ...customThemeNames.map((name) => ({
-      label: name,
-      value: name,
-      themeNameDisplay: name,
-      themeTypeDisplay: 'Custom',
-    })),
-  ];
+  const themeItems = themeManager
+    .getAvailableThemes()
+    .map((theme) => {
+      const fullTheme = themeManager.getTheme(theme.name);
+      const capitalizedType = capitalize(theme.type);
+      const typeDisplay = theme.name.endsWith(capitalizedType)
+        ? ''
+        : capitalizedType;
+
+      return generateThemeItem(
+        theme.name,
+        typeDisplay,
+        fullTheme,
+        terminalBackgroundColor,
+      );
+    })
+    .sort((a, b) => {
+      // Show compatible themes first
+      if (a.isCompatible && !b.isCompatible) return -1;
+      if (!a.isCompatible && b.isCompatible) return 1;
+      // Then sort by name
+      return a.label.localeCompare(b.label);
+    });
 
   // Find the index of the selected theme, but only if it exists in the list
   const initialThemeIndex = themeItems.findIndex(
@@ -80,8 +142,8 @@ export function ThemeDialog({
   const safeInitialThemeIndex = initialThemeIndex >= 0 ? initialThemeIndex : 0;
 
   const handleThemeSelect = useCallback(
-    (themeName: string) => {
-      onSelect(themeName, selectedScope);
+    async (themeName: string) => {
+      await onSelect(themeName, selectedScope);
     },
     [onSelect, selectedScope],
   );
@@ -91,13 +153,13 @@ export function ThemeDialog({
     onHighlight(themeName);
   };
 
-  const handleScopeHighlight = useCallback((scope: SettingScope) => {
+  const handleScopeHighlight = useCallback((scope: LoadableSettingScope) => {
     setSelectedScope(scope);
   }, []);
 
   const handleScopeSelect = useCallback(
-    (scope: SettingScope) => {
-      onSelect(highlightedThemeName, scope);
+    async (scope: LoadableSettingScope) => {
+      await onSelect(highlightedThemeName, scope);
     },
     [onSelect, highlightedThemeName],
   );
@@ -108,10 +170,13 @@ export function ThemeDialog({
     (key) => {
       if (key.name === 'tab') {
         setMode((prev) => (prev === 'theme' ? 'scope' : 'theme'));
+        return true;
       }
       if (key.name === 'escape') {
-        onSelect(undefined, selectedScope);
+        onCancel();
+        return true;
       }
+      return false;
     },
     { isActive: true },
   );
@@ -210,18 +275,66 @@ export function ThemeDialog({
               maxItemsToShow={12}
               showScrollArrows={true}
               showNumbers={mode === 'theme'}
+              renderItem={(item, { titleColor }) => {
+                // We know item has themeWarning because we put it there, but we need to cast or access safely
+                const itemWithExtras = item as typeof item & {
+                  themeWarning?: string;
+                  themeMatch?: string;
+                };
+
+                if (item.themeNameDisplay && item.themeTypeDisplay) {
+                  const match = item.themeNameDisplay.match(/^(.*) \((.*)\)$/);
+                  let themeNamePart: React.ReactNode = item.themeNameDisplay;
+                  if (match) {
+                    themeNamePart = (
+                      <>
+                        {match[1]}{' '}
+                        <Text color={theme.text.secondary}>({match[2]})</Text>
+                      </>
+                    );
+                  }
+
+                  return (
+                    <Text color={titleColor} wrap="truncate" key={item.key}>
+                      {themeNamePart}{' '}
+                      <Text color={theme.text.secondary}>
+                        {item.themeTypeDisplay}
+                      </Text>
+                      {itemWithExtras.themeMatch && (
+                        <Text color={theme.status.success}>
+                          {itemWithExtras.themeMatch}
+                        </Text>
+                      )}
+                      {itemWithExtras.themeWarning && (
+                        <Text color={theme.status.warning}>
+                          {itemWithExtras.themeWarning}
+                        </Text>
+                      )}
+                    </Text>
+                  );
+                }
+                // Regular label display
+                return (
+                  <Text color={titleColor} wrap="truncate">
+                    {item.label}
+                  </Text>
+                );
+              }}
             />
           </Box>
 
           {/* Right Column: Preview */}
           <Box flexDirection="column" width="55%" paddingLeft={2}>
-            <Text bold>Preview</Text>
+            <Text bold color={theme.text.primary}>
+              Preview
+            </Text>
             {/* Get the Theme object for the highlighted theme, fall back to default if not found */}
             {(() => {
               const previewTheme =
                 themeManager.getTheme(
                   highlightedThemeName || DEFAULT_THEME.name,
                 ) || DEFAULT_THEME;
+
               return (
                 <Box
                   borderStyle="single"
@@ -232,17 +345,19 @@ export function ThemeDialog({
                   paddingRight={1}
                   flexDirection="column"
                 >
-                  {colorizeCode(
-                    `# function
+                  {colorizeCode({
+                    code: `# function
 def fibonacci(n):
     a, b = 0, 1
     for _ in range(n):
         a, b = b, a + b
     return a`,
-                    'python',
-                    codeBlockHeight,
-                    colorizeCodeWidth,
-                  )}
+                    language: 'python',
+                    availableHeight:
+                      isAlternateBuffer === false ? codeBlockHeight : undefined,
+                    maxWidth: colorizeCodeWidth,
+                    settings,
+                  })}
                   <Box marginTop={1} />
                   <DiffRenderer
                     diffContent={`--- a/util.py
@@ -251,7 +366,9 @@ def fibonacci(n):
 - print("Hello, " + name)
 + print(f"Hello, {name}!")
 `}
-                    availableTerminalHeight={diffHeight}
+                    availableTerminalHeight={
+                      isAlternateBuffer === false ? diffHeight : undefined
+                    }
                     terminalWidth={colorizeCodeWidth}
                     theme={previewTheme}
                   />
@@ -271,7 +388,7 @@ def fibonacci(n):
       <Box marginTop={1}>
         <Text color={theme.text.secondary} wrap="truncate">
           (Use Enter to {mode === 'theme' ? 'select' : 'apply scope'}, Tab to{' '}
-          {mode === 'theme' ? 'configure scope' : 'select theme'})
+          {mode === 'theme' ? 'configure scope' : 'select theme'}, Esc to close)
         </Text>
       </Box>
     </Box>

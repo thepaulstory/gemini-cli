@@ -10,6 +10,7 @@ import {
   type CodeAssistServer,
   UserTierId,
   getCodeAssistServer,
+  debugLogger,
 } from '@google/gemini-cli-core';
 
 export interface PrivacyState {
@@ -31,7 +32,10 @@ export const usePrivacySettings = (config: Config) => {
       });
       try {
         const server = getCodeAssistServerOrFail(config);
-        const tier = await getTier(server);
+        const tier = server.userTier;
+        if (tier === undefined) {
+          throw new Error('Could not determine user tier.');
+        }
         if (tier !== UserTierId.FREE) {
           // We don't need to fetch opt-out info since non-free tier
           // data gathering is already worked out some other way.
@@ -55,6 +59,7 @@ export const usePrivacySettings = (config: Config) => {
         });
       }
     };
+    // eslint-disable-next-line @typescript-eslint/no-floating-promises
     fetchInitialState();
   }, [config]);
 
@@ -94,30 +99,20 @@ function getCodeAssistServerOrFail(config: Config): CodeAssistServer {
   return server;
 }
 
-async function getTier(server: CodeAssistServer): Promise<UserTierId> {
-  const loadRes = await server.loadCodeAssist({
-    cloudaicompanionProject: server.projectId,
-    metadata: {
-      ideType: 'IDE_UNSPECIFIED',
-      platform: 'PLATFORM_UNSPECIFIED',
-      pluginType: 'GEMINI',
-      duetProject: server.projectId,
-    },
-  });
-  if (!loadRes.currentTier) {
-    throw new Error('User does not have a current tier');
-  }
-  return loadRes.currentTier.id;
-}
-
 async function getRemoteDataCollectionOptIn(
   server: CodeAssistServer,
 ): Promise<boolean> {
   try {
     const resp = await server.getCodeAssistGlobalUserSetting();
-    return resp.freeTierDataCollectionOptin;
+    if (resp.freeTierDataCollectionOptin === undefined) {
+      debugLogger.warn(
+        'Warning: Code Assist API did not return freeTierDataCollectionOptin. Defaulting to true.',
+      );
+    }
+    return resp.freeTierDataCollectionOptin ?? true;
   } catch (error: unknown) {
     if (error && typeof error === 'object' && 'response' in error) {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
       const gaxiosError = error as {
         response?: {
           status?: unknown;
@@ -139,5 +134,10 @@ async function setRemoteDataCollectionOptIn(
     cloudaicompanionProject: server.projectId,
     freeTierDataCollectionOptin: optIn,
   });
-  return resp.freeTierDataCollectionOptin;
+  if (resp.freeTierDataCollectionOptin === undefined) {
+    debugLogger.warn(
+      `Warning: Code Assist API did not return freeTierDataCollectionOptin. Defaulting to ${optIn}.`,
+    );
+  }
+  return resp.freeTierDataCollectionOptin ?? optIn;
 }
