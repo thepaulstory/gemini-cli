@@ -4,8 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import type { Mock } from 'vitest';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import { GemmaClassifierStrategy } from './gemmaClassifierStrategy.js';
 import type { RoutingContext } from '../routingStrategy.js';
 import type { Config } from '../../config/config.js';
@@ -13,6 +12,7 @@ import type { BaseLlmClient } from '../../core/baseLlmClient.js';
 import {
   DEFAULT_GEMINI_FLASH_MODEL,
   DEFAULT_GEMINI_MODEL,
+  PREVIEW_GEMINI_MODEL_AUTO,
 } from '../../config/models.js';
 import type { Content } from '@google/genai';
 import { debugLogger } from '../../utils/debugLogger.js';
@@ -39,6 +39,9 @@ describe('GemmaClassifierStrategy', () => {
       }),
       getModel: () => DEFAULT_GEMINI_MODEL,
       getPreviewFeatures: () => false,
+      getGemini31Launched: vi.fn().mockResolvedValue(false),
+      getUseCustomToolModel: vi.fn().mockResolvedValue(false),
+      getHasAccessToPreviewModel: vi.fn().mockReturnValue(true),
     } as unknown as Config;
 
     strategy = new GemmaClassifierStrategy();
@@ -320,5 +323,25 @@ second message
 `;
 
     expect(lastTurn!.parts!.at(0)!.text).toEqual(expectedLastTurn);
+  });
+
+  it('should route to DEFAULT_GEMINI_FLASH_MODEL when hasGemini35FlashGAAccess is true', async () => {
+    mockConfig.hasGemini35FlashGAAccess = vi.fn().mockReturnValue(true);
+    mockConfig.getModel = () => PREVIEW_GEMINI_MODEL_AUTO;
+
+    const mockApiResponse = {
+      reasoning: 'Simple task',
+      model_choice: 'flash',
+    };
+    mockGenerateJson.mockResolvedValue(mockApiResponse);
+
+    const decision = await strategy.route(
+      mockContext,
+      mockConfig,
+      mockBaseLlmClient,
+      mockLocalLiteRtLmClient,
+    );
+
+    expect(decision?.model).toBe(DEFAULT_GEMINI_FLASH_MODEL);
   });
 });

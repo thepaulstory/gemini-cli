@@ -299,7 +299,7 @@ export const ModelStatsDisplay: React.FC<ModelStatsDisplayProps> = ({
     },
     ...modelNames.map((name) => ({
       key: name,
-      header: name,
+      header: getDisplayString(name),
       flexGrow: 1,
       renderCell: (row: StatRowData) => {
         // Don't render anything for section headers in model columns
@@ -340,8 +340,8 @@ export const ModelStatsDisplay: React.FC<ModelStatsDisplayProps> = ({
           <Text color={theme.text.primary}>
             {selectedAuthType.startsWith('oauth')
               ? userEmail
-                ? `Logged in with Google (${userEmail})`
-                : 'Logged in with Google'
+                ? `Signed in with Google (${userEmail})`
+                : 'Signed in with Google'
               : selectedAuthType}
           </Text>
         </Box>

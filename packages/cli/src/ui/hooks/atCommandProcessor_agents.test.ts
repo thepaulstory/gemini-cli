@@ -18,6 +18,7 @@ import {
   StandardFileSystemService,
   ToolRegistry,
   COMMON_IGNORE_PATTERNS,
+  ApprovalMode,
 } from '@google/gemini-cli-core';
 import * as os from 'node:os';
 import type { UseHistoryManagerReturn } from './useHistoryManager.js';
@@ -36,8 +37,8 @@ describe('handleAtCommand with Agents', () => {
   beforeEach(async () => {
     vi.resetAllMocks();
 
-    testRootDir = await fsPromises.mkdtemp(
-      path.join(os.tmpdir(), 'agent-test-'),
+    testRootDir = await fsPromises.realpath(
+      await fsPromises.mkdtemp(path.join(os.tmpdir(), 'agent-test-')),
     );
 
     abortController = new AbortController();
@@ -136,6 +137,7 @@ describe('handleAtCommand with Agents', () => {
       getMessageBus: () => mockMessageBus,
       interactive: true,
       getAgentRegistry: () => mockAgentRegistry,
+      getApprovalMode: () => ApprovalMode.DEFAULT,
     } as unknown as Config;
 
     const registry = new ToolRegistry(mockConfig, mockMessageBus);

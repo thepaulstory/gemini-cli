@@ -5,8 +5,7 @@
  */
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import type { Mocked } from 'vitest';
-import { vi, describe, it, expect, beforeEach } from 'vitest';
+import { vi, describe, it, expect, beforeEach, type Mocked } from 'vitest';
 import type { BaseLlmClient } from '../core/baseLlmClient.js';
 
 // MOCKS
@@ -245,6 +244,21 @@ describe('editCorrector', () => {
 
       expect(result).toBe(content);
       expect(mockGenerateJson).not.toHaveBeenCalled();
+    });
+
+    it('should preserve \\n inside string literals even when aggressiveUnescape is false (b-496211054)', async () => {
+      const content =
+        'fmt.Printf("OpenFile with FailIfExists failed: %v\\n", err)';
+
+      const result = await ensureCorrectFileContent(
+        content,
+        mockBaseLlmClientInstance,
+        abortSignal,
+        true, // disableLLMCorrection
+        false, // aggressiveUnescape (now false for Gemini 2.5/3.x/Custom)
+      );
+
+      expect(result).toBe(content);
     });
   });
 });

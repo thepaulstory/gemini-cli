@@ -20,20 +20,18 @@ import {
   terminalCapabilityManager,
 } from '../utils/terminalCapabilityManager.js';
 import { WARNING_PROMPT_DURATION_MS } from '../constants.js';
+import { formatCommand } from '../key/keybindingUtils.js';
+import { Command } from '../key/keyBindings.js';
 
 interface UseSuspendProps {
   handleWarning: (message: string) => void;
   setRawMode: (mode: boolean) => void;
-  refreshStatic: () => void;
-  setForceRerenderKey: (updater: (prev: number) => number) => void;
   shouldUseAlternateScreen: boolean;
 }
 
 export function useSuspend({
   handleWarning,
   setRawMode,
-  refreshStatic,
-  setForceRerenderKey,
   shouldUseAlternateScreen,
 }: UseSuspendProps) {
   const [ctrlZPressCount, setCtrlZPressCount] = useState(0);
@@ -59,10 +57,11 @@ export function useSuspend({
       clearTimeout(ctrlZTimerRef.current);
       ctrlZTimerRef.current = null;
     }
+    const suspendKey = formatCommand(Command.SUSPEND_APP);
     if (ctrlZPressCount > 1) {
       setCtrlZPressCount(0);
       if (process.platform === 'win32') {
-        handleWarning('Ctrl+Z suspend is not supported on Windows.');
+        handleWarning(`${suspendKey} suspend is not supported on Windows.`);
         return;
       }
 
@@ -105,16 +104,8 @@ export function useSuspend({
             enableMouseEvents();
           }
 
-          // Force Ink to do a complete repaint by:
-          // 1. Emitting a resize event (tricks Ink into full redraw)
-          // 2. Remounting components via state changes
+          // Force Ink to do a complete repaint without remounting the app.
           process.stdout.emit('resize');
-
-          // Give a tick for resize to process, then trigger remount
-          setImmediate(() => {
-            refreshStatic();
-            setForceRerenderKey((prev) => prev + 1);
-          });
         } finally {
           if (onResumeHandlerRef.current === onResume) {
             onResumeHandlerRef.current = null;
@@ -130,22 +121,16 @@ export function useSuspend({
 
       process.kill(0, 'SIGTSTP');
     } else if (ctrlZPressCount > 0) {
+      const undoKey = formatCommand(Command.UNDO);
       handleWarning(
-        'Press Ctrl+Z again to suspend. Undo has moved to Cmd + Z or Alt/Opt + Z.',
+        `Press ${suspendKey} again to suspend. Undo has moved to ${undoKey}.`,
       );
       ctrlZTimerRef.current = setTimeout(() => {
         setCtrlZPressCount(0);
         ctrlZTimerRef.current = null;
       }, WARNING_PROMPT_DURATION_MS);
     }
-  }, [
-    ctrlZPressCount,
-    handleWarning,
-    setRawMode,
-    refreshStatic,
-    setForceRerenderKey,
-    shouldUseAlternateScreen,
-  ]);
+  }, [ctrlZPressCount, handleWarning, setRawMode, shouldUseAlternateScreen]);
 
   const handleSuspend = useCallback(() => {
     setCtrlZPressCount((prev) => prev + 1);

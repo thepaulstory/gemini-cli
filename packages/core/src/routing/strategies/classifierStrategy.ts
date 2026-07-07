@@ -20,9 +20,9 @@ import {
   isFunctionResponse,
 } from '../../utils/messageInspectors.js';
 import { debugLogger } from '../../utils/debugLogger.js';
+import { normalizeModelId } from '../../utils/modelUtils.js';
 import type { LocalLiteRtLmClient } from '../../core/localLiteRtLmClient.js';
 import { LlmRole } from '../../telemetry/types.js';
-import { AuthType } from '../../core/contentGenerator.js';
 
 // The number of recent history turns to provide to the router for context.
 const HISTORY_TURNS_FOR_CONTEXT = 4;
@@ -140,8 +140,19 @@ export class ClassifierStrategy implements RoutingStrategy {
       const model = context.requestedModel ?? config.getModel();
       if (
         (await config.getNumericalRoutingEnabled()) &&
-        isGemini3Model(model)
+        isGemini3Model(model, config)
       ) {
+        return null;
+      }
+
+      // TODO - Consider using function req/res if they help accuracy.
+      // Bypass the classifier if the request is a function response.
+      // Since we prune all tool turns from history, sending a function response
+      // request would result in an invalid payload (missing the preceding function call).
+      if (isFunctionResponse(createUserContent(context.request))) {
+        debugLogger.log(
+          '[Routing] Bypassing Classifier: request is FunctionResponse.',
+        );
         return null;
       }
 
@@ -150,7 +161,6 @@ export class ClassifierStrategy implements RoutingStrategy {
       const historySlice = context.history.slice(-HISTORY_SEARCH_WINDOW);
 
       // Filter out tool-related turns.
-      // TODO - Consider using function req/res if they help accuracy.
       const cleanHistory = historySlice.filter(
         (content) => !isFunctionCall(content) && !isFunctionResponse(content),
       );
@@ -172,16 +182,32 @@ export class ClassifierStrategy implements RoutingStrategy {
 
       const reasoning = routerResponse.reasoning;
       const latencyMs = Date.now() - startTime;
-      const useGemini3_1 = (await config.getGemini31Launched?.()) ?? false;
-      const useCustomToolModel =
-        useGemini3_1 &&
-        config.getContentGeneratorConfig().authType === AuthType.USE_GEMINI;
-      const selectedModel = resolveClassifierModel(
-        model,
-        routerResponse.model_choice,
-        useGemini3_1,
-        useCustomToolModel,
+      const [useGemini3_1, useCustomToolModel] = await Promise.all([
+        config.getGemini31Launched(),
+        config.getUseCustomToolModel(),
+      ]);
+      const useGemini3_5Flash = config.hasGemini35FlashGAAccess?.() ?? false;
+      const selectedModel = normalizeModelId(
+        resolveClassifierModel(
+          normalizeModelId(model),
+          routerResponse.model_choice,
+          useGemini3_1,
+          useCustomToolModel,
+          config.getHasAccessToPreviewModel?.() ?? true,
+          config,
+          useGemini3_5Flash,
+        ),
       );
+
+      const service = config.getModelAvailabilityService();
+      const snapshot = service.snapshot(selectedModel);
+
+      if (!snapshot.available) {
+        debugLogger.warn(
+          `[Routing] Classifier selected unavailable model ${selectedModel} (${snapshot.reason}). Bypassing.`,
+        );
+        return null;
+      }
 
       return {
         model: selectedModel,

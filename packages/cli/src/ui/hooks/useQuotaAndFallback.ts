@@ -67,14 +67,6 @@ export function useQuotaAndFallback({
   const isDialogPending = useRef(false);
   const isValidationPending = useRef(false);
 
-  // Initial overage strategy from settings; runtime value read from config at call time.
-  const initialOverageStrategy =
-    (settings.merged.billing?.overageStrategy as
-      | 'ask'
-      | 'always'
-      | 'never'
-      | undefined) ?? 'ask';
-
   // Set up Flash fallback handler
   useEffect(() => {
     const fallbackHandler: FallbackModelHandler = async (
@@ -109,9 +101,7 @@ export function useQuotaAndFallback({
             ? getResetTimeMessage(error.retryDelayMs)
             : undefined;
 
-          const overageStrategy =
-            config.getBillingSettings().overageStrategy ??
-            initialOverageStrategy;
+          const overageStrategy = config.getBillingSettings().overageStrategy;
 
           const creditsResult = await handleCreditsFlow({
             config,
@@ -145,7 +135,20 @@ export function useQuotaAndFallback({
         message = messageLines.join('\n');
       } else if (error instanceof ModelNotFoundError) {
         isModelNotFoundError = true;
-        if (VALID_GEMINI_MODELS.has(failedModel)) {
+        if (
+          contentGeneratorConfig?.authType === AuthType.USE_VERTEX_AI &&
+          VALID_GEMINI_MODELS.has(failedModel)
+        ) {
+          const location =
+            process.env['GOOGLE_CLOUD_LOCATION'] || 'your configured region';
+          const messageLines = [
+            `Model "${failedModel}" is not available in region "${location}".`,
+            `To see which models are available in this region, please visit:`,
+            `https://cloud.google.com/vertex-ai/generative-ai/docs/learn/locations`,
+            `/model to switch models.`,
+          ];
+          message = messageLines.join('\n');
+        } else if (VALID_GEMINI_MODELS.has(failedModel)) {
           const messageLines = [
             `It seems like you don't have access to ${getDisplayString(failedModel)}.`,
             `Your admin might have disabled the access. Contact them to enable the Preview Release Channel.`,
@@ -209,7 +212,6 @@ export function useQuotaAndFallback({
     userTier,
     paidTier,
     settings,
-    initialOverageStrategy,
     setModelSwitchedFromQuotaError,
     onShowAuthSelection,
     errorVerbosity,

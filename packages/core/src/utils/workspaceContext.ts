@@ -4,10 +4,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { isNodeError } from '../utils/errors.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { debugLogger } from './debugLogger.js';
+import { resolveToRealPath } from './paths.js';
 
 export type Unsubscribe = () => void;
 
@@ -184,11 +184,25 @@ export class WorkspaceContext {
 
       for (const dir of this.directories) {
         if (this.isPathWithinRoot(fullyResolvedPath, dir)) {
+          // Check for blocked segments case-insensitively
+          const relative = path.relative(dir, fullyResolvedPath);
+          const segments = relative.split(path.sep);
+          const hasBlockedSegment = segments.some((segment) => {
+            const clean = trimTrailingSpacesAndDots(
+              segment.split(':')[0],
+            ).toLowerCase();
+            return (
+              clean === '.git' || clean === '.env' || clean === 'node_modules'
+            );
+          });
+          if (hasBlockedSegment) {
+            return false;
+          }
           return true;
         }
       }
       return false;
-    } catch (_error) {
+    } catch {
       return false;
     }
   }
@@ -216,7 +230,7 @@ export class WorkspaceContext {
         }
       }
       return false;
-    } catch (_error) {
+    } catch {
       return false;
     }
   }
@@ -227,22 +241,7 @@ export class WorkspaceContext {
    * if it did exist.
    */
   private fullyResolvedPath(pathToCheck: string): string {
-    try {
-      return fs.realpathSync(path.resolve(this.targetDir, pathToCheck));
-    } catch (e: unknown) {
-      if (
-        isNodeError(e) &&
-        e.code === 'ENOENT' &&
-        e.path &&
-        // realpathSync does not set e.path correctly for symlinks to
-        // non-existent files.
-        !this.isFileSymlink(e.path)
-      ) {
-        // If it doesn't exist, e.path contains the fully resolved path.
-        return e.path;
-      }
-      throw e;
-    }
+    return resolveToRealPath(path.resolve(this.targetDir, pathToCheck));
   }
 
   /**
@@ -262,15 +261,16 @@ export class WorkspaceContext {
       !path.isAbsolute(relative)
     );
   }
+}
 
-  /**
-   * Checks if a file path is a symbolic link that points to a file.
-   */
-  private isFileSymlink(filePath: string): boolean {
-    try {
-      return !fs.readlinkSync(filePath).endsWith('/');
-    } catch (_error) {
-      return false;
-    }
+/**
+ * Trims trailing spaces and dots from a string without using regular expressions
+ * to completely eliminate any potential ReDoS (Regular Expression Denial of Service) risk.
+ */
+function trimTrailingSpacesAndDots(str: string): string {
+  let end = str.length - 1;
+  while (end >= 0 && (str[end] === ' ' || str[end] === '.')) {
+    end--;
   }
+  return str.slice(0, end + 1);
 }
