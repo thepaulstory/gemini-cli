@@ -30,6 +30,10 @@ export const SENSITIVE_KEY_PATTERNS = [
   'secret_key',
   'client_secret',
   'client_id',
+  'gemini_api_key',
+  'google_api_key',
+  'llm_api_key',
+  'openai_api_key',
 ];
 
 /**

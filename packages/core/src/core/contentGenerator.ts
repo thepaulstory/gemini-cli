@@ -31,7 +31,10 @@ import { RecordingContentGenerator } from './recordingContentGenerator.js';
 import { getVersion, resolveModel } from '../../index.js';
 import type { LlmRole } from '../telemetry/llmRole.js';
 import { ModelMappingContentGenerator } from './modelMappingContentGenerator.js';
-import { CCPA_AI_MODEL_MAPPINGS } from '../config/models.js';
+import { CCPA_AI_MODEL_MAPPINGS, DEFAULT_GEMINI_MODEL } from '../config/models.js';
+import { type ModelProvider } from './model-provider.js';
+import { GoogleGeminiProvider } from './providers/google-gemini-provider.js';
+import { OpenAICompatibleProvider } from './providers/openai-compatible-provider.js';
 
 /**
  * Interface abstracting the core functionalities for generating content and counting tokens.
@@ -208,7 +211,7 @@ export async function createContentGenerator(
   config: ContentGeneratorConfig,
   gcConfig: Config,
   sessionId?: string,
-): Promise<ContentGenerator> {
+): Promise<ContentGenerator & { getProvider: () => ModelProvider }> {
   const generator = await (async () => {
     if (gcConfig.fakeResponsesNonStrict) {
       const fakeGenerator = await FakeContentGenerator.fromFile(
@@ -411,9 +414,36 @@ export async function createContentGenerator(
     );
   })();
 
-  if (gcConfig.recordResponses) {
-    return new RecordingContentGenerator(generator, gcConfig.recordResponses);
+  const aiProvider = process.env['AI_PROVIDER'] || process.env['LLM_PROVIDER'] || 'google';
+  if (process.env['AI_PROVIDER'] && process.env['LLM_PROVIDER'] && process.env['AI_PROVIDER'] !== process.env['LLM_PROVIDER']) {
+      console.warn(`Both AI_PROVIDER and LLM_PROVIDER are set. Using AI_PROVIDER: ${process.env['AI_PROVIDER']}`);
   }
 
-  return generator;
+  let provider: ModelProvider;
+  if (aiProvider === 'openai-compatible') {
+      provider = new OpenAICompatibleProvider({
+          baseUrl: process.env['LLM_BASE_URL'],
+          apiKey: process.env['LLM_API_KEY'] || process.env['OPENAI_API_KEY'],
+          model: process.env['AI_MODEL'] || process.env['LLM_MODEL'],
+      });
+  } else if (aiProvider === 'google') {
+      provider = new GoogleGeminiProvider(generator, config);
+  } else {
+      throw new Error(`Unsupported AI_PROVIDER: ${aiProvider}`);
+  }
+
+  if (gcConfig.recordResponses) {
+    const recordingGenerator = new RecordingContentGenerator(generator, gcConfig.recordResponses);
+    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+    return {
+        ...recordingGenerator,
+        getProvider: () => provider,
+    } as any;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+  return {
+      ...generator,
+      getProvider: () => provider,
+  } as any;
 }

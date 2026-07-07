@@ -179,6 +179,14 @@ gemini
 
 **✨ Best for:** Developers who need specific model control or paid tier access
 
+**Note:** You can also use `AI_PROVIDER=google` and `GEMINI_API_KEY` explicitly.
+
+```bash
+export AI_PROVIDER=google
+export GEMINI_API_KEY="YOUR_API_KEY"
+gemini
+```
+
 **Benefits:**
 
 - **Free tier**: 1000 requests/day with Gemini 3 (mix of flash and pro)
@@ -231,6 +239,13 @@ gemini --include-directories ../lib,../docs
 
 ```bash
 gemini -m gemini-2.5-flash
+```
+
+You can also set the model via environment variables:
+
+```bash
+export AI_MODEL=gemini-2.5-flash
+gemini
 ```
 
 #### Non-interactive mode for scripts
@@ -352,6 +367,24 @@ custom tools:
 See the
 [MCP Server Integration guide](https://www.geminicli.com/docs/tools/mcp-server)
 for setup instructions.
+
+## 🔌 Multi-Provider Support (Experimental)
+
+Gemini CLI now supports an abstraction layer for multiple model providers. While Google Gemini remains the default and most feature-rich provider, you can experiment with other OpenAI-compatible endpoints.
+
+### OpenAI-Compatible Provider
+
+To use an OpenAI-compatible provider, set the following environment variables:
+
+```bash
+export AI_PROVIDER=openai-compatible
+export LLM_BASE_URL="https://api.example.com/v1"
+export LLM_API_KEY="your-key"
+export LLM_MODEL="your-model-id"
+gemini
+```
+
+Note: Tool calling and streaming support in the OpenAI-compatible provider are currently in early experimental stages.
 
 ## 🤝 Contributing
 

@@ -30,6 +30,7 @@ import {
 import { retryWithBackoff, getRetryErrorType } from '../utils/retry.js';
 import { coreEvents } from '../utils/events.js';
 import { getDisplayString } from '../config/models.js';
+import { toGenerateContentResponse } from './model-provider.js';
 import type { ModelConfigKey } from '../services/modelConfigService.js';
 import {
   applyModelSelection,
@@ -141,8 +142,12 @@ export class BaseLlmClient {
       maxAttempts,
     } = options;
 
-    const { model } =
+    const resolvedModelConfig =
       this.config.modelConfigService.getResolvedConfig(modelConfigKey);
+    let model = resolvedModelConfig.model;
+    if ((model === 'auto' || model === 'gemini-2.0-flash') && (process.env['AI_MODEL'] || process.env['LLM_MODEL'])) {
+        model = process.env['AI_MODEL'] || process.env['LLM_MODEL'] || model;
+    }
 
     const shouldRetryOnContent = (response: GenerateContentResponse) => {
       const text = getResponseText(response)?.trim();
@@ -346,6 +351,19 @@ export class BaseLlmClient {
           config: finalConfig,
           contents,
         };
+        const provider = (this.contentGenerator as any).getProvider?.();
+        if (provider) {
+            return provider.generateContent({
+                model: currentModel,
+                contents,
+                systemInstruction: finalConfig.systemInstruction,
+                tools: finalConfig.tools,
+                generationConfig: finalConfig,
+                abortSignal,
+                promptId,
+                role,
+            }).then(res => toGenerateContentResponse(res));
+        }
         return this.contentGenerator.generateContent(
           requestParams,
           promptId,
