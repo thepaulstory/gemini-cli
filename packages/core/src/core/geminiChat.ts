@@ -30,8 +30,9 @@ import {
   getRetryErrorType,
 } from '../utils/retry.js';
 import type { ValidationRequiredError } from '../utils/googleQuotaErrors.js';
-import { resolveModel, supportsModernFeatures } from '../config/models.js';
+import { resolveModel, supportsModernFeatures, DEFAULT_GEMINI_MODEL } from '../config/models.js';
 import { hasCycleInSchema } from '../tools/tools.js';
+import { toGenerateContentResponse } from './model-provider.js';
 import type { StructuredError } from './turn.js';
 import type { CompletedToolCall } from '../scheduler/types.js';
 import {
@@ -390,8 +391,21 @@ export class GeminiChat {
     this.sendPromise = streamDonePromise;
 
     let userContent = createUserContent(message);
-    const { model } =
+    const resolvedModelConfig =
       this.context.config.modelConfigService.getResolvedConfig(modelConfigKey);
+    // Flags (-m) should override environment variables.
+    // If the resolved model is the default one, we might want to check env vars.
+    // However, the standard behavior for this repo seems to be using resolvedModelConfig.model.
+    // Let's implement the override correctly: CLI flags are already in resolvedModelConfig.
+    let model = resolvedModelConfig.model;
+
+    // If we are still using the default model and env vars are set, then env vars override default.
+    if ((model === DEFAULT_GEMINI_MODEL || model === 'auto') && (process.env['AI_MODEL'] || process.env['LLM_MODEL'])) {
+        model = process.env['AI_MODEL'] || process.env['LLM_MODEL'] || model;
+        if (process.env['AI_MODEL'] && process.env['LLM_MODEL'] && process.env['AI_MODEL'] !== process.env['LLM_MODEL']) {
+            console.warn(`Both AI_MODEL and LLM_MODEL are set. Using AI_MODEL: ${process.env['AI_MODEL']}`);
+        }
+    }
 
     const isContextManagementEnabled =
       this.context.config.isContextManagementEnabled();
@@ -851,8 +865,30 @@ export class GeminiChat {
       lastContentsToUse = contentsToUse;
 
       const finalContents = stripToolCallIdPrefixes(contentsToUse);
+      const generator = this.context.config.getContentGenerator();
+      const provider = (generator as any).getProvider?.();
 
-      return this.context.config.getContentGenerator().generateContentStream(
+      if (provider) {
+        const stream = provider.generateContentStream({
+            model: modelToUse,
+            contents: finalContents,
+            systemInstruction: this.systemInstruction,
+            tools: this.tools,
+            generationConfig: config,
+            abortSignal,
+            promptId: prompt_id,
+            role,
+            streaming: true,
+        });
+
+        return (async function* () {
+            for await (const res of stream) {
+                yield toGenerateContentResponse(res);
+            }
+        })();
+      }
+
+      return generator.generateContentStream(
         {
           model: modelToUse,
           contents: finalContents,
