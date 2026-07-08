@@ -435,15 +435,13 @@ export async function createContentGenerator(
   if (gcConfig.recordResponses) {
     const recordingGenerator = new RecordingContentGenerator(generator, gcConfig.recordResponses);
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-    return {
-        ...recordingGenerator,
+    return Object.assign(recordingGenerator, {
         getProvider: () => provider,
-    } as any;
+    }) as any;
   }
 
   // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-  return {
-      ...generator,
+  return Object.assign(generator, {
       getProvider: () => provider,
-  } as any;
+  }) as any;
 }

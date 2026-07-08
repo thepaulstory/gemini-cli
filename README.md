@@ -374,17 +374,17 @@ Gemini CLI now supports an abstraction layer for multiple model providers. While
 
 ### OpenAI-Compatible Provider
 
-To use an OpenAI-compatible provider, set the following environment variables:
+To use an OpenAI-compatible provider (like Groq, Together AI, or a local Ollama instance), set the following environment variables:
 
 ```bash
 export AI_PROVIDER=openai-compatible
-export LLM_BASE_URL="https://api.example.com/v1"
-export LLM_API_KEY="your-key"
-export LLM_MODEL="your-model-id"
+export LLM_BASE_URL="https://api.groq.com/openai/v1"
+export LLM_API_KEY="your-groq-key"
+export LLM_MODEL="qwen/qwen3.6-27b"
 gemini
 ```
 
-Note: Tool calling and streaming support in the OpenAI-compatible provider are currently in early experimental stages.
+Gemini CLI will use the OpenAI-compatible API for text generation, streaming, and tool calling.
 
 ## 🤝 Contributing
 

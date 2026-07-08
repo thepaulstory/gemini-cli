@@ -92,7 +92,9 @@ export interface ModelProvider {
  * Utility to convert ModelResponse back to GenerateContentResponse for backward compatibility.
  */
 export function toGenerateContentResponse(response: ModelResponse): GenerateContentResponse {
-    if (response.rawResponse) {
+    // Only return rawResponse directly for Google provider to maintain full compatibility.
+    // For other providers, we must use the normalized fields.
+    if (response.rawResponse && (response.rawResponse as any).candidates) {
         return response.rawResponse as GenerateContentResponse;
     }
 

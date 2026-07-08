@@ -354,7 +354,7 @@ export class BaseLlmClient {
         const provider = (this.contentGenerator as any).getProvider?.();
         if (provider) {
             return provider.generateContent({
-                model: currentModel,
+                model,
                 contents,
                 systemInstruction: finalConfig.systemInstruction,
                 tools: finalConfig.tools,
