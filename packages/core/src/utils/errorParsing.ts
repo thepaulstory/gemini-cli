@@ -81,5 +81,9 @@ export function parseAndFormatApiError(
     return `[API Error: ${error}]`;
   }
 
+  if (error instanceof Error && error.message) {
+    return `[API Error: ${error.message}]`;
+  }
+
   return '[API Error: An unknown error occurred.]';
 }

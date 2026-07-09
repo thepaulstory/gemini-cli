@@ -34,6 +34,15 @@ export const SENSITIVE_KEY_PATTERNS = [
   'google_api_key',
   'llm_api_key',
   'openai_api_key',
+  'ai_api_key',
+  'groq_api_key',
+  'deepseek_api_key',
+  'dashscope_api_key',
+  'moonshot_api_key',
+  'kimi_api_key',
+  'glm_api_key',
+  'zai_api_key',
+  'bigmodel_api_key',
 ];
 
 /**

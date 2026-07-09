@@ -41,6 +41,9 @@ vi.mock('../auth/AuthDialog.js', () => ({
 vi.mock('../auth/ApiAuthDialog.js', () => ({
   ApiAuthDialog: () => <Text>ApiAuthDialog</Text>,
 }));
+vi.mock('./ProviderConfigDialog.js', () => ({
+  ProviderConfigDialog: () => <Text>ProviderConfigDialog</Text>,
+}));
 vi.mock('./EditorSettingsDialog.js', () => ({
   EditorSettingsDialog: () => <Text>EditorSettingsDialog</Text>,
 }));
@@ -86,6 +89,7 @@ describe('DialogManager', () => {
     isModelDialogOpen: false,
     isAuthenticating: false,
     isAwaitingApiKeyInput: false,
+    isAwaitingProviderConfig: false,
     isAuthDialogOpen: false,
     isEditorDialogOpen: false,
     showPrivacyNotice: false,
@@ -157,6 +161,7 @@ describe('DialogManager', () => {
     [{ isModelDialogOpen: true }, 'ModelDialog'],
     [{ isAuthenticating: true }, 'AuthInProgress'],
     [{ isAwaitingApiKeyInput: true }, 'ApiAuthDialog'],
+    [{ isAwaitingProviderConfig: true }, 'ProviderConfigDialog'],
     [{ isAuthDialogOpen: true }, 'AuthDialog'],
     [{ isEditorDialogOpen: true }, 'EditorSettingsDialog'],
     [{ showPrivacyNotice: true }, 'PrivacyNotice'],

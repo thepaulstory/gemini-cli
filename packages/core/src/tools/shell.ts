@@ -66,6 +66,17 @@ const BACKGROUND_DELAY_MS = 200;
 const SHOW_NL_DESCRIPTION_THRESHOLD = 150;
 const LOW_SURROGATE_START = 0xdc00;
 const LOW_SURROGATE_END = 0xdfff;
+const INTERACTIVE_SCAFFOLDING_PATTERNS = [
+  /\bcreate-vite\b/i,
+  /\bcreate-react-app\b/i,
+  /\bcreate-next-app\b/i,
+  /\bcreate-expo-app\b/i,
+  /\bnpm\s+(?:create|init)\b/i,
+  /\bnpx\s+(?:-[^\s]+\s+)*create-[^\s]+/i,
+  /\b(?:pnpm|yarn|bun)\s+create\b/i,
+];
+const NON_INTERACTIVE_SCAFFOLDING_FLAGS =
+  /(?:^|\s)(?:--yes|-y|--template|-t|--defaults)(?:\s|=|$)/i;
 
 function trimLiveOutputBuffer(output: string): string {
   if (output.length <= LIVE_OUTPUT_MAX_BUFFER_CHARS) {
@@ -81,6 +92,15 @@ function trimLiveOutputBuffer(output: string): string {
     startIndex += 1;
   }
   return output.slice(startIndex);
+}
+
+function shouldAutoBackgroundInteractiveScaffolder(command: string): boolean {
+  if (NON_INTERACTIVE_SCAFFOLDING_FLAGS.test(command)) {
+    return false;
+  }
+  return INTERACTIVE_SCAFFOLDING_PATTERNS.some((pattern) =>
+    pattern.test(command),
+  );
 }
 
 export interface ShellToolParams {
@@ -464,6 +484,10 @@ export class ShellToolInvocation extends BaseToolInvocation<
       setExecutionIdCallback,
     } = options;
     const strippedCommand = stripShellWrapper(this.params.command);
+    const autoBackground =
+      shouldAutoBackgroundInteractiveScaffolder(strippedCommand);
+    const shouldRunInBackground =
+      this.params.is_background === true || autoBackground;
 
     if (detectCommandSubstitution(strippedCommand)) {
       return {
@@ -550,7 +574,7 @@ export class ShellToolInvocation extends BaseToolInvocation<
 
       const flushOutput = () => {
         cancelTrailingFlush();
-        if (!hasPendingOutput || !updateOutput || this.params.is_background) {
+        if (!hasPendingOutput || !updateOutput || shouldRunInBackground) {
           return;
         }
 
@@ -564,7 +588,7 @@ export class ShellToolInvocation extends BaseToolInvocation<
         if (
           trailingFlushTimer !== null ||
           !updateOutput ||
-          this.params.is_background
+          shouldRunInBackground
         ) {
           return;
         }
@@ -648,7 +672,7 @@ export class ShellToolInvocation extends BaseToolInvocation<
               }
             }
 
-            if (shouldUpdate && !this.params.is_background) {
+            if (shouldUpdate && !shouldRunInBackground) {
               flushOutput();
             }
           },
@@ -692,9 +716,10 @@ export class ShellToolInvocation extends BaseToolInvocation<
           setExecutionIdCallback(pid);
         }
 
-        // If the model requested to run in the background, do so after a short delay.
+        // If requested, or if this is a known interactive scaffolder, move it
+        // to the background so the model can inspect/respond in the next turn.
         let completed = false;
-        if (this.params.is_background) {
+        if (shouldRunInBackground) {
           resultPromise
             .then(() => {
               completed = true;
@@ -714,8 +739,11 @@ export class ShellToolInvocation extends BaseToolInvocation<
 
           if (!completed) {
             // Return early with initial output if still running
+            const backgroundMessage = autoBackground
+              ? 'Command appears to be an interactive scaffolding command and was automatically moved to background.'
+              : 'Command is running in background.';
             return {
-              llmContent: `Command is running in background. PID: ${pid}. Initial output:\n${cumulativeOutput}`,
+              llmContent: `${backgroundMessage} PID: ${pid}. Initial output:\n${cumulativeOutput}\nUse read_background_output to inspect output and send_shell_input to respond if the process prompts for input.`,
               returnDisplay: `Background process started with PID ${pid}.`,
             };
           }
@@ -788,8 +816,10 @@ export class ShellToolInvocation extends BaseToolInvocation<
         } else {
           llmContent += ' There was no output before it was cancelled.';
         }
-      } else if (this.params.is_background || result.backgrounded) {
-        llmContent = `Command moved to background (PID: ${result.pid}). Output hidden. Press Ctrl+B to view.`;
+      } else if (shouldRunInBackground || result.backgrounded) {
+        llmContent = autoBackground
+          ? `Command appears to be an interactive scaffolding command and was automatically moved to background (PID: ${result.pid}). Output hidden. Use read_background_output to inspect output and send_shell_input to respond if the process prompts for input.`
+          : `Command moved to background (PID: ${result.pid}). Output hidden. Use read_background_output to inspect output and send_shell_input to respond if the process prompts for input.`;
         data = {
           pid: result.pid,
           command: this.params.command,
@@ -833,7 +863,7 @@ export class ShellToolInvocation extends BaseToolInvocation<
       if (this.context.config.getDebugMode()) {
         returnDisplay = llmContent;
       } else {
-        if (this.params.is_background || result.backgrounded) {
+        if (shouldRunInBackground || result.backgrounded) {
           returnDisplay = `Command moved to background (PID: ${result.pid}). Output hidden. Press Ctrl+B to view.`;
         } else if (result.aborted) {
           const cancelMsg = timeoutMessage || 'Command cancelled by user.';
@@ -1066,7 +1096,7 @@ export class ShellToolInvocation extends BaseToolInvocation<
       // Only clean up if NOT running in background.
       // Background processes need the temp directory and PID file to remain
       // available until they exit.
-      if (!this.params.is_background) {
+      if (!shouldRunInBackground) {
         if (tempFilePath) {
           try {
             await fsPromises.unlink(tempFilePath);

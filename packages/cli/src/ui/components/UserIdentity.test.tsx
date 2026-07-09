@@ -159,6 +159,30 @@ describe('<UserIdentity />', () => {
     unmount();
   });
 
+  it('should show the active non-Google provider profile', async () => {
+    const mockConfig = makeFakeConfig();
+    vi.spyOn(mockConfig, 'getContentGeneratorConfig').mockReturnValue({
+      authType: AuthType.USE_GEMINI,
+      model: 'qwen/qwen3.6-27b',
+    } as unknown as ContentGeneratorConfig);
+    vi.spyOn(mockConfig, 'getModelProviderConfig').mockReturnValue({
+      provider: 'openai-compatible',
+      profile: 'groq',
+      displayName: 'Groq',
+    });
+    vi.spyOn(mockConfig, 'getUserTierName').mockReturnValue(undefined);
+
+    const { lastFrame, unmount } = await renderWithProviders(
+      <UserIdentity config={mockConfig} />,
+    );
+
+    const output = lastFrame();
+    expect(output).toContain(
+      `Authenticated with ${AuthType.USE_GEMINI} · provider Groq`,
+    );
+    unmount();
+  });
+
   it('should render specific tier name when provided', async () => {
     const mockConfig = makeFakeConfig();
     vi.spyOn(mockConfig, 'getContentGeneratorConfig').mockReturnValue({

@@ -58,12 +58,12 @@ export function getShellToolDescription(
 
   if (os.platform() === 'win32') {
     const backgroundInstructions = enableInteractiveShell
-      ? `To run a command in the background, set the \`${SHELL_PARAM_IS_BACKGROUND}\` parameter to true. Do NOT use PowerShell background constructs.`
+      ? `To run a command in the background, set the \`${SHELL_PARAM_IS_BACKGROUND}\` parameter to true. Do NOT use PowerShell background constructs. For commands that may prompt for input, run them in the background, inspect them with \`read_background_output\`, and respond with \`send_shell_input\`.`
       : 'Command can start background processes using PowerShell constructs such as `Start-Process -NoNewWindow` or `Start-Job`.';
     return `This tool executes a given shell command as \`powershell.exe -NoProfile -Command <command>\`. ${backgroundInstructions}${efficiencyGuidelines}${returnedInfo}`;
   } else {
     const backgroundInstructions = enableInteractiveShell
-      ? `To run a command in the background, set the \`${SHELL_PARAM_IS_BACKGROUND}\` parameter to true. Do NOT use \`&\` to background commands.`
+      ? `To run a command in the background, set the \`${SHELL_PARAM_IS_BACKGROUND}\` parameter to true. Do NOT use \`&\` to background commands. For commands that may prompt for input, run them in the background, inspect them with \`read_background_output\`, and respond with \`send_shell_input\`.`
       : 'Command can start background processes using `&`.';
     return `This tool executes a given shell command as \`bash -c <command>\`. ${backgroundInstructions} Command is executed as a subprocess that leads its own process group. Command process group can be terminated as \`kill -- -PGID\` or signaled as \`kill -s SIGNAL -- -PGID\`.${efficiencyGuidelines}${returnedInfo}`;
   }
@@ -113,7 +113,7 @@ export function getShellDeclaration(
         [SHELL_PARAM_IS_BACKGROUND]: {
           type: 'boolean',
           description:
-            'Set to true if this command should be run in the background (e.g. for long-running servers or watchers). The command will be started, allowed to run for a brief moment to check for immediate errors, and then moved to the background.',
+            'Set to true if this command should be run in the background (e.g. for long-running servers, watchers, or interactive CLIs that may prompt for input). The command will be started, allowed to run for a brief moment to check for immediate errors, and then moved to the background.',
         },
         delay_ms: {
           type: 'integer',

@@ -21,10 +21,19 @@ import {
   AuthType,
   createContentGenerator,
   createContentGeneratorConfig,
+  getAuthTypeFromEnv,
   type ContentGenerator,
   type ContentGeneratorConfig,
   type VertexAiRoutingConfig,
 } from '../core/contentGenerator.js';
+import {
+  getAllModelProviderProfiles,
+  getModelProviderProfile,
+  resolveModelProviderConfigFromEnv,
+  resolveModelProviderProfileConfig,
+  type ModelProviderProfile,
+  type ModelProviderRuntimeConfig,
+} from '../core/providerProfiles.js';
 import type { OverageStrategy } from '../billing/billing.js';
 import { PromptRegistry } from '../prompts/prompt-registry.js';
 import { ResourceRegistry } from '../resources/resource-registry.js';
@@ -55,6 +64,7 @@ import { EnterPlanModeTool } from '../tools/enter-plan-mode.js';
 import {
   ListBackgroundProcessesTool,
   ReadBackgroundOutputTool,
+  SendShellInputTool,
 } from '../tools/shellBackgroundTools.js';
 import { GeminiClient } from '../core/client.js';
 import { BaseLlmClient } from '../core/baseLlmClient.js';
@@ -745,6 +755,7 @@ export interface ConfigParameters {
   };
   vertexAiRouting?: VertexAiRoutingConfig;
   logRagSnippets?: boolean;
+  modelProviderConfig?: ModelProviderRuntimeConfig;
 }
 
 export class Config implements McpContext, AgentLoopContext {
@@ -957,6 +968,7 @@ export class Config implements McpContext, AgentLoopContext {
     overageStrategy: OverageStrategy;
   };
   private readonly vertexAiRouting: VertexAiRoutingConfig | undefined;
+  private modelProviderConfig: ModelProviderRuntimeConfig;
 
   private readonly enableAgents: boolean;
   private agents: AgentSettings;
@@ -1393,6 +1405,8 @@ export class Config implements McpContext, AgentLoopContext {
       overageStrategy: params.billing?.overageStrategy ?? 'ask',
     };
     this.vertexAiRouting = params.vertexAiRouting;
+    this.modelProviderConfig =
+      params.modelProviderConfig ?? resolveModelProviderConfigFromEnv();
 
     if (params.contextFileName) {
       setGeminiMdFilename(params.contextFileName);
@@ -1605,6 +1619,9 @@ export class Config implements McpContext, AgentLoopContext {
       this,
       this.getSessionId(),
     );
+    if (newContentGeneratorConfig.modelProvider) {
+      this.modelProviderConfig = newContentGeneratorConfig.modelProvider;
+    }
     // Only assign to instance properties after successful initialization
     this.contentGeneratorConfig = newContentGeneratorConfig;
 
@@ -1904,6 +1921,76 @@ export class Config implements McpContext, AgentLoopContext {
 
   getContentGeneratorConfig(): ContentGeneratorConfig {
     return this.contentGeneratorConfig;
+  }
+
+  getModelProviderConfig(): ModelProviderRuntimeConfig {
+    return this.modelProviderConfig;
+  }
+
+  getModelProviderProfiles(): readonly ModelProviderProfile[] {
+    return getAllModelProviderProfiles();
+  }
+
+  async setModelProviderProfile(
+    profileId: string,
+    model?: string,
+    isTemporary: boolean = true,
+  ): Promise<ModelProviderRuntimeConfig> {
+    const profile = getModelProviderProfile(profileId);
+    if (!profile) {
+      throw new Error(`Unknown model provider profile: ${profileId}`);
+    }
+
+    const selectedModel =
+      model || profile.defaultModel || profile.models[0]?.id || this.model;
+    this.modelProviderConfig = resolveModelProviderProfileConfig(
+      profile.id,
+      process.env,
+      selectedModel,
+    );
+
+    if (selectedModel) {
+      this.setModel(selectedModel, isTemporary);
+    }
+
+    if (this.contentGeneratorConfig) {
+      const currentAuthType = this.contentGeneratorConfig.authType;
+      const nextAuthType =
+        profile.provider === 'openai-compatible'
+          ? AuthType.OPENAI_COMPATIBLE
+          : currentAuthType && currentAuthType !== AuthType.OPENAI_COMPATIBLE
+            ? currentAuthType
+            : getAuthTypeFromEnv() === AuthType.OPENAI_COMPATIBLE
+              ? AuthType.USE_GEMINI
+              : (getAuthTypeFromEnv() ?? AuthType.USE_GEMINI);
+
+      await this.refreshAuth(nextAuthType);
+    }
+
+    return this.modelProviderConfig;
+  }
+
+  async refreshModelProviderFromEnvironment(): Promise<ModelProviderRuntimeConfig> {
+    const runtimeConfig = resolveModelProviderConfigFromEnv(process.env, {
+      inferProfileFromApiKey: true,
+    });
+    if (runtimeConfig.provider === 'openai-compatible') {
+      if (!runtimeConfig.baseUrl) {
+        throw new Error(
+          'The OpenAI-compatible provider needs AI_BASE_URL or LLM_BASE_URL.',
+        );
+      }
+      if (!runtimeConfig.apiKey) {
+        throw new Error(
+          `The ${runtimeConfig.displayName ?? 'OpenAI-compatible'} provider needs ` +
+            `${runtimeConfig.apiKeyEnv ?? 'LLM_API_KEY'} or a generic AI/LLM API key.`,
+        );
+      }
+    }
+    const profileId =
+      runtimeConfig.profile ??
+      (runtimeConfig.provider === 'google' ? 'google' : 'openai-compatible');
+    return this.setModelProviderProfile(profileId, runtimeConfig.model, true);
   }
 
   getModel(): string {
@@ -4005,6 +4092,9 @@ export class Config implements McpContext, AgentLoopContext {
       registry.registerTool(
         new ReadBackgroundOutputTool(this, this.messageBus),
       ),
+    );
+    maybeRegister(SendShellInputTool, () =>
+      registry.registerTool(new SendShellInputTool(this, this.messageBus)),
     );
     maybeRegister(WebSearchTool, () =>
       registry.registerTool(new WebSearchTool(this, this.messageBus)),

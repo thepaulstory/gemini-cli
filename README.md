@@ -370,11 +370,31 @@ for setup instructions.
 
 ## 🔌 Multi-Provider Support (Experimental)
 
-Gemini CLI now supports an abstraction layer for multiple model providers. While Google Gemini remains the default and most feature-rich provider, you can experiment with other OpenAI-compatible endpoints.
+Gemini CLI supports an abstraction layer for multiple model providers. Google
+Gemini remains the default and most feature-rich provider, and OpenAI-compatible
+providers can be selected with environment variables or the `/model` menu.
 
-### OpenAI-Compatible Provider
+### Google Gemini
 
-To use an OpenAI-compatible provider, set the following environment variables:
+No provider configuration is required for the default Google path. You can be
+explicit when you want:
+
+```bash
+export AI_PROVIDER=google
+export GEMINI_API_KEY="your-gemini-key"
+gemini -m gemini-2.5-pro
+```
+
+Model precedence is:
+
+1. `--model` / `-m`
+2. `GEMINI_MODEL`, `AI_MODEL`, or `LLM_MODEL`
+3. saved model setting
+4. default model
+
+### OpenAI-Compatible Providers
+
+For a custom endpoint, set:
 
 ```bash
 export AI_PROVIDER=openai-compatible
@@ -384,7 +404,46 @@ export LLM_MODEL="your-model-id"
 gemini
 ```
 
-Note: Tool calling and streaming support in the OpenAI-compatible provider are currently in early experimental stages.
+Built-in provider profiles are available for common OpenAI-compatible services:
+
+```bash
+# Groq-hosted GPT-OSS (the Groq profile default)
+export AI_PROVIDER=groq
+export GROQ_API_KEY="your-groq-key"
+export AI_MODEL="openai/gpt-oss-120b"
+gemini
+```
+
+Inside the CLI, use `/model` to switch provider profiles and models:
+
+```text
+/model providers
+/model provider groq openai/gpt-oss-120b
+/model provider groq groq/compound
+/model provider groq qwen/qwen3.6-27b
+/model provider deepseek deepseek-v4-pro
+/model provider qwen qwen-plus
+/model provider kimi kimi-k2-0711-preview
+/model provider glm glm-5.2
+/model environment
+/model set qwen/qwen3.6-27b
+```
+
+Provider profiles currently include `google`, `groq`, `deepseek`, `qwen`,
+`kimi`, `glm`, and `openai-compatible`. API keys are read from environment
+variables such as `GROQ_API_KEY`, `DEEPSEEK_API_KEY`, `DASHSCOPE_API_KEY`,
+`MOONSHOT_API_KEY`, `GLM_API_KEY`, `ZAI_API_KEY`, `LLM_API_KEY`, or
+`OPENAI_API_KEY`. Use `/model environment` to edit these variables inside the
+CLI. Changes update the running process immediately, persist to
+`~/.gemini/.env`, and are also written to the Windows user environment.
+
+The `glm` profile uses Z.AI's `https://api.z.ai/api/paas/v4` endpoint and
+includes `glm-5.2`, `glm-5`, `glm-5-turbo`, `glm-4.7`, `glm-4.7-flashx`, and
+`glm-4.5-air`.
+
+Streaming and native tool calling are implemented for OpenAI-compatible
+providers, but provider-specific behavior varies. If a provider has a different
+base URL, set `LLM_BASE_URL` to override the profile default.
 
 ## 🤝 Contributing
 

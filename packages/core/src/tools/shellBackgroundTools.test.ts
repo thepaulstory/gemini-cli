@@ -9,23 +9,33 @@ import { ShellExecutionService } from '../services/shellExecutionService.js';
 import {
   ListBackgroundProcessesTool,
   ReadBackgroundOutputTool,
+  SendShellInputTool,
 } from './shellBackgroundTools.js';
-import { createMockMessageBus } from '../test-utils/mock-message-bus.js';
+import {
+  createMockMessageBus,
+  getMockMessageBusInstance,
+} from '../test-utils/mock-message-bus.js';
 import fs from 'node:fs';
 import type { AgentLoopContext } from '../config/agent-loop-context.js';
 
 describe('Background Tools', () => {
   let listTool: ListBackgroundProcessesTool;
   let readTool: ReadBackgroundOutputTool;
+  let sendTool: SendShellInputTool;
   const bus = createMockMessageBus();
 
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.clearAllMocks();
+    const mockBus = getMockMessageBusInstance(bus);
+    mockBus.clear();
+    mockBus.defaultToolDecision = 'allow';
     const mockContext = {
       config: { getSessionId: () => 'default' },
     } as unknown as AgentLoopContext;
     listTool = new ListBackgroundProcessesTool(mockContext, bus);
     readTool = new ReadBackgroundOutputTool(mockContext, bus);
+    sendTool = new SendShellInputTool(mockContext, bus);
 
     // Clear history to avoid state leakage from previous runs
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -330,5 +340,198 @@ describe('Background Tools', () => {
     expect(result.llmContent).not.toContain('line1');
 
     fs.unlinkSync(logPath);
+  });
+
+  it('send_shell_input should deny access for processes in other sessions', async () => {
+    const pid = 42424;
+    const history = new Map();
+    history.set(pid, {
+      command: 'other command',
+      status: 'running',
+      startTime: Date.now(),
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (ShellExecutionService as any).backgroundProcessHistory.set(
+      'other-session',
+      history,
+    );
+    const writeSpy = vi.spyOn(ShellExecutionService, 'writeToPty');
+
+    const invocation = sendTool.build({ pid, input: 'yes' });
+    const result = await invocation.execute({
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(result.error).toBeDefined();
+    expect(result.llmContent).toContain('Access denied');
+    expect(writeSpy).not.toHaveBeenCalled();
+  });
+
+  it('send_shell_input should reject exited processes', async () => {
+    const pid = 42425;
+    const history = new Map();
+    history.set(pid, {
+      command: 'finished command',
+      status: 'exited',
+      exitCode: 0,
+      startTime: Date.now(),
+      endTime: Date.now(),
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (ShellExecutionService as any).backgroundProcessHistory.set(
+      'default',
+      history,
+    );
+    const writeSpy = vi.spyOn(ShellExecutionService, 'writeToPty');
+
+    const invocation = sendTool.build({ pid, input: 'yes' });
+    const result = await invocation.execute({
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(result.error).toBeDefined();
+    expect(result.llmContent).toContain('no longer running');
+    expect(writeSpy).not.toHaveBeenCalled();
+  });
+
+  it('send_shell_input should reject inactive running processes', async () => {
+    const pid = 42426;
+    const history = new Map();
+    history.set(pid, {
+      command: 'stale command',
+      status: 'running',
+      startTime: Date.now(),
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (ShellExecutionService as any).backgroundProcessHistory.set(
+      'default',
+      history,
+    );
+    vi.spyOn(ShellExecutionService, 'isPtyActive').mockReturnValue(false);
+    const writeSpy = vi.spyOn(ShellExecutionService, 'writeToPty');
+
+    const invocation = sendTool.build({ pid, input: 'yes' });
+    const result = await invocation.execute({
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(result.error).toBeDefined();
+    expect(result.llmContent).toContain('not active');
+    expect(writeSpy).not.toHaveBeenCalled();
+  });
+
+  it('send_shell_input should append Enter by default', async () => {
+    const pid = 42427;
+    const history = new Map();
+    history.set(pid, {
+      command: 'interactive command',
+      status: 'running',
+      startTime: Date.now(),
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (ShellExecutionService as any).backgroundProcessHistory.set(
+      'default',
+      history,
+    );
+    vi.spyOn(ShellExecutionService, 'isPtyActive').mockReturnValue(true);
+    const writeSpy = vi
+      .spyOn(ShellExecutionService, 'writeToPty')
+      .mockImplementation(() => {});
+
+    const invocation = sendTool.build({ pid, input: 'React' });
+    const result = await invocation.execute({
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.llmContent).toContain(
+      `Sent input to background process ${pid}`,
+    );
+    expect(writeSpy).toHaveBeenCalledWith(pid, 'React\r');
+  });
+
+  it('send_shell_input should support raw input without appending Enter', async () => {
+    const pid = 42428;
+    const history = new Map();
+    history.set(pid, {
+      command: 'interactive command',
+      status: 'running',
+      startTime: Date.now(),
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (ShellExecutionService as any).backgroundProcessHistory.set(
+      'default',
+      history,
+    );
+    vi.spyOn(ShellExecutionService, 'isPtyActive').mockReturnValue(true);
+    const writeSpy = vi
+      .spyOn(ShellExecutionService, 'writeToPty')
+      .mockImplementation(() => {});
+
+    const invocation = sendTool.build({
+      pid,
+      input: '\x1b[B',
+      append_newline: false,
+    });
+    const result = await invocation.execute({
+      abortSignal: new AbortController().signal,
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(writeSpy).toHaveBeenCalledWith(pid, '\x1b[B');
+  });
+
+  it('send_shell_input should not require confirmation for non-shell background commands', async () => {
+    const pid = 42429;
+    const history = new Map();
+    history.set(pid, {
+      command: 'npm create vite',
+      status: 'running',
+      startTime: Date.now(),
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (ShellExecutionService as any).backgroundProcessHistory.set(
+      'default',
+      history,
+    );
+    const mockBus = getMockMessageBusInstance(bus);
+    mockBus.defaultToolDecision = 'ask_user';
+
+    const invocation = sendTool.build({ pid, input: 'React' });
+    const details = await invocation.shouldConfirmExecute(
+      new AbortController().signal,
+    );
+
+    expect(details).toBe(false);
+    expect(mockBus.publish).not.toHaveBeenCalled();
+  });
+
+  it('send_shell_input should require confirmation for background shells', async () => {
+    const pid = 42430;
+    const history = new Map();
+    history.set(pid, {
+      command: 'bash',
+      status: 'running',
+      startTime: Date.now(),
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (ShellExecutionService as any).backgroundProcessHistory.set(
+      'default',
+      history,
+    );
+    const mockBus = getMockMessageBusInstance(bus);
+    mockBus.defaultToolDecision = 'ask_user';
+
+    const invocation = sendTool.build({ pid, input: 'rm -rf build' });
+    const details = await invocation.shouldConfirmExecute(
+      new AbortController().signal,
+    );
+
+    expect(details).toEqual(
+      expect.objectContaining({
+        type: 'info',
+        title: 'Confirm: send_shell_input',
+      }),
+    );
   });
 });

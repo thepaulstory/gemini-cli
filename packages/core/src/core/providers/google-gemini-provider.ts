@@ -15,10 +15,7 @@ import {
   type ProviderCapabilities,
   type NormalizedToolCall,
 } from '../model-provider.js';
-import {
-  type GenerateContentResponse,
-  type FunctionCall,
-} from '@google/genai';
+import { type GenerateContentResponse, type FunctionCall } from '@google/genai';
 
 /**
  * Google Gemini Model Provider.
@@ -37,7 +34,7 @@ export class GoogleGeminiProvider implements ModelProvider {
 
   constructor(
     private readonly contentGenerator: ContentGenerator,
-    private readonly config: ContentGeneratorConfig,
+    _config: ContentGeneratorConfig,
   ) {}
 
   async generateContent(request: ModelRequest): Promise<ModelResponse> {
@@ -59,7 +56,7 @@ export class GoogleGeminiProvider implements ModelProvider {
     return this.normalizeResponse(response);
   }
 
-  async *generateContentStream(
+  async generateContentStream(
     request: ModelRequest,
   ): Promise<AsyncGenerator<ModelResponse>> {
     const stream = await this.contentGenerator.generateContentStream(
@@ -77,6 +74,12 @@ export class GoogleGeminiProvider implements ModelProvider {
       request.role,
     );
 
+    return this.normalizeStream(stream);
+  }
+
+  private async *normalizeStream(
+    stream: AsyncGenerator<GenerateContentResponse>,
+  ): AsyncGenerator<ModelResponse> {
     for await (const chunk of stream) {
       yield this.normalizeResponse(chunk);
     }
@@ -98,12 +101,12 @@ export class GoogleGeminiProvider implements ModelProvider {
         toolCalls.push(this.normalizeToolCall(fc));
       }
     } else {
-        // Fallback to parts if functionCalls not present on response object
-        for (const part of parts) {
-            if (part.functionCall) {
-                toolCalls.push(this.normalizeToolCall(part.functionCall));
-            }
+      // Fallback to parts if functionCalls not present on response object
+      for (const part of parts) {
+        if (part.functionCall) {
+          toolCalls.push(this.normalizeToolCall(part.functionCall));
         }
+      }
     }
 
     return {
@@ -124,7 +127,7 @@ export class GoogleGeminiProvider implements ModelProvider {
   private normalizeToolCall(fc: FunctionCall): NormalizedToolCall {
     return {
       id: fc.id || '',
-      name: fc.name,
+      name: fc.name ?? '',
       argumentsJson: fc.args,
       providerName: this.name,
       providerMetadata: {

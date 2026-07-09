@@ -701,6 +701,7 @@ describe('Core System Prompt (prompts.ts)', () => {
       vi.mocked(mockConfig.isInteractiveShellEnabled).mockReturnValue(true);
       const prompt = getCoreSystemPrompt(mockConfig);
       expect(prompt).toContain('tab');
+      expect(prompt).toContain('send_shell_input');
     });
 
     it("should NOT include 'tab' instructions when interactive shell is disabled", () => {

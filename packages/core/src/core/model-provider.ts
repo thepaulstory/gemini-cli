@@ -5,11 +5,12 @@
  */
 
 import {
+  FinishReason,
+  GenerateContentResponse,
   type Content,
+  type FunctionCall,
   type Part,
-  type Tool,
-  type GenerateContentResponse,
-  type GenerationConfig,
+  type GenerateContentConfig,
 } from '@google/genai';
 import { type LlmRole } from '../telemetry/llmRole.js';
 
@@ -45,9 +46,9 @@ export interface ProviderCapabilities {
 export interface ModelRequest {
   model: string;
   contents: Content[];
-  systemInstruction?: string | Part | Part[] | Content;
-  tools?: Tool[];
-  generationConfig?: GenerationConfig;
+  systemInstruction?: GenerateContentConfig['systemInstruction'];
+  tools?: GenerateContentConfig['tools'];
+  generationConfig?: GenerateContentConfig;
   abortSignal?: AbortSignal;
   promptId: string;
   role: LlmRole;
@@ -61,6 +62,7 @@ export interface ModelRequest {
  */
 export interface ModelResponse {
   text?: string;
+  thought?: string;
   toolCalls?: NormalizedToolCall[];
   finishReason?: string;
   usageMetadata?: {
@@ -79,49 +81,84 @@ export interface ModelProvider {
   readonly name: string;
   readonly capabilities: ProviderCapabilities;
 
-  generateContent(
-    request: ModelRequest,
-  ): Promise<ModelResponse>;
+  generateContent(request: ModelRequest): Promise<ModelResponse>;
 
   generateContentStream(
     request: ModelRequest,
   ): Promise<AsyncGenerator<ModelResponse>>;
 }
 
+function isGenerateContentResponse(
+  response: unknown,
+): response is GenerateContentResponse {
+  return (
+    typeof response === 'object' &&
+    response !== null &&
+    'candidates' in response &&
+    !('choices' in response)
+  );
+}
+
 /**
  * Utility to convert ModelResponse back to GenerateContentResponse for backward compatibility.
  */
-export function toGenerateContentResponse(response: ModelResponse): GenerateContentResponse {
-    if (response.rawResponse) {
-        return response.rawResponse as GenerateContentResponse;
-    }
+export function toGenerateContentResponse(
+  response: ModelResponse,
+): GenerateContentResponse {
+  if (isGenerateContentResponse(response.rawResponse)) {
+    return response.rawResponse;
+  }
 
-    const parts: Part[] = [];
-    if (response.text) {
-        parts.push({ text: response.text });
-    }
-    if (response.toolCalls) {
-        for (const tc of response.toolCalls) {
-            parts.push({
-                functionCall: {
-                    name: tc.name,
-                    args: tc.argumentsJson as any,
-                    id: tc.id,
-                }
-            });
-        }
-    }
+  const parts: Part[] = [];
+  if (response.thought) {
+    parts.push({ text: response.thought, thought: true });
+  }
+  if (response.text) {
+    parts.push({ text: response.text });
+  }
+  const functionCalls: FunctionCall[] = (response.toolCalls ?? [])
+    .filter((tc) => !tc.parseError)
+    .map((tc) => ({
+      name: tc.name,
+      args: isRecord(tc.argumentsJson) ? tc.argumentsJson : undefined,
+      id: tc.id,
+    }));
+  for (const functionCall of functionCalls) {
+    parts.push({ functionCall });
+  }
 
-    return {
-        candidates: [
-            {
-                content: {
-                    role: 'model',
-                    parts,
-                },
-                finishReason: response.finishReason as any,
-            }
-        ],
-        usageMetadata: response.usageMetadata as any,
-    } as GenerateContentResponse;
+  const result = new GenerateContentResponse();
+  result.candidates = [
+    {
+      content: {
+        role: 'model',
+        parts,
+      },
+      finishReason: toFinishReason(response.finishReason),
+    },
+  ];
+  result.usageMetadata = response.usageMetadata;
+  return result;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function toFinishReason(reason: string | undefined): FinishReason | undefined {
+  switch (reason?.toLowerCase()) {
+    case 'stop':
+    case 'tool_calls':
+    case 'function_call':
+      return FinishReason.STOP;
+    case 'length':
+    case 'max_tokens':
+      return FinishReason.MAX_TOKENS;
+    case 'content_filter':
+      return FinishReason.SAFETY;
+    case undefined:
+      return undefined;
+    default:
+      return FinishReason.OTHER;
+  }
 }

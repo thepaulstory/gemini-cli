@@ -44,7 +44,7 @@ import {
   createContentGenerator,
   createContentGeneratorConfig,
   type ContentGeneratorConfig,
-  type ContentGenerator,
+  type ContentGeneratorWithProvider,
 } from '../core/contentGenerator.js';
 import { GeminiClient } from '../core/client.js';
 import { GitService } from '../services/gitService.js';
@@ -322,6 +322,72 @@ describe('Server Config (config.ts)', () => {
         maxAttempts: 20,
       });
       expect(config.getMaxAttempts()).toBe(DEFAULT_MAX_ATTEMPTS);
+    });
+  });
+
+  describe('setModelProviderProfile', () => {
+    it('should pin the selected model into the provider runtime config', async () => {
+      try {
+        vi.stubEnv('GROQ_API_KEY', 'test-groq-key');
+        const config = new Config(baseParams);
+
+        await config.setModelProviderProfile('groq', 'qwen/qwen3.6-27b');
+
+        expect(config.getModelProviderConfig()).toEqual(
+          expect.objectContaining({
+            provider: 'openai-compatible',
+            profile: 'groq',
+            model: 'qwen/qwen3.6-27b',
+            apiKey: 'test-groq-key',
+          }),
+        );
+        expect(config.getModel()).toBe('qwen/qwen3.6-27b');
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it('should refresh the provider and model from the current environment', async () => {
+      try {
+        vi.stubEnv('AI_PROVIDER', 'glm');
+        vi.stubEnv('ZAI_API_KEY', 'test-zai-key');
+        vi.stubEnv('AI_MODEL', 'glm-5-turbo');
+        const config = new Config(baseParams);
+
+        await config.refreshModelProviderFromEnvironment();
+
+        expect(config.getModelProviderConfig()).toEqual(
+          expect.objectContaining({
+            provider: 'openai-compatible',
+            profile: 'glm',
+            baseUrl: 'https://api.z.ai/api/paas/v4',
+            apiKey: 'test-zai-key',
+            model: 'glm-5-turbo',
+          }),
+        );
+        expect(config.getModel()).toBe('glm-5-turbo');
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it('should reject an incomplete OpenAI-compatible environment refresh', async () => {
+      try {
+        vi.stubEnv('AI_PROVIDER', 'glm');
+        vi.stubEnv('AI_API_KEY', undefined as unknown as string);
+        vi.stubEnv('LLM_API_KEY', undefined as unknown as string);
+        vi.stubEnv('OPENAI_API_KEY', undefined as unknown as string);
+        vi.stubEnv('ZAI_API_KEY', undefined as unknown as string);
+        vi.stubEnv('GLM_API_KEY', undefined as unknown as string);
+        vi.stubEnv('BIGMODEL_API_KEY', undefined as unknown as string);
+        const config = new Config(baseParams);
+
+        await expect(
+          config.refreshModelProviderFromEnvironment(),
+        ).rejects.toThrow('needs ZAI_API_KEY');
+      } finally {
+        vi.unstubAllEnvs();
+      }
     });
   });
 
@@ -3445,7 +3511,8 @@ describe('Config Quota & Preview Model Access', () => {
       vi.mocked(createContentGenerator).mockResolvedValue({
         userTier: mockTier,
         userTierName: mockTierName,
-      } as Partial<CodeAssistServer> as CodeAssistServer);
+        getProvider: vi.fn(),
+      } as Partial<ContentGeneratorWithProvider> as ContentGeneratorWithProvider);
 
       await config.refreshAuth(AuthType.USE_GEMINI);
 
@@ -4220,7 +4287,8 @@ describe('Model Persistence Bug Fix (#19864)', () => {
 
     const mockContentGenerator = {
       generateContent: vi.fn(),
-    } as Partial<ContentGenerator> as ContentGenerator;
+      getProvider: vi.fn(),
+    } as Partial<ContentGeneratorWithProvider> as ContentGeneratorWithProvider;
 
     vi.mocked(createContentGeneratorConfig).mockResolvedValue(
       mockContentConfig,
@@ -4248,7 +4316,8 @@ describe('Model Persistence Bug Fix (#19864)', () => {
 
     const mockContentGenerator = {
       generateContent: vi.fn(),
-    } as Partial<ContentGenerator> as ContentGenerator;
+      getProvider: vi.fn(),
+    } as Partial<ContentGeneratorWithProvider> as ContentGeneratorWithProvider;
 
     vi.mocked(createContentGeneratorConfig).mockResolvedValue(
       mockContentConfig,

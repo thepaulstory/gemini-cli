@@ -75,6 +75,11 @@ export function AuthDialog({
       value: AuthType.USE_VERTEX_AI,
       key: AuthType.USE_VERTEX_AI,
     },
+    {
+      label: 'OpenAI-compatible provider',
+      value: AuthType.OPENAI_COMPATIBLE,
+      key: AuthType.OPENAI_COMPATIBLE,
+    },
   ];
 
   if (settings.merged.security.auth.enforcedType) {
@@ -105,6 +110,15 @@ export function AuthDialog({
 
     if (process.env['GEMINI_API_KEY']) {
       return item.value === AuthType.USE_GEMINI;
+    }
+
+    const providerEnv = (
+      process.env['AI_PROVIDER'] ||
+      process.env['LLM_PROVIDER'] ||
+      ''
+    ).toLowerCase();
+    if (providerEnv && providerEnv !== 'google' && providerEnv !== 'gemini') {
+      return item.value === AuthType.OPENAI_COMPATIBLE;
     }
 
     return item.value === AuthType.LOGIN_WITH_GOOGLE;
@@ -148,6 +162,10 @@ export function AuthDialog({
           setAuthState(AuthState.AwaitingApiKeyInput);
           return;
         }
+        if (authType === AuthType.OPENAI_COMPATIBLE) {
+          setAuthState(AuthState.AwaitingProviderConfig);
+          return;
+        }
       }
       setAuthState(AuthState.Unauthenticated);
     },
@@ -155,6 +173,10 @@ export function AuthDialog({
   );
 
   const handleAuthSelect = async (authMethod: AuthType) => {
+    if (authMethod === AuthType.OPENAI_COMPATIBLE) {
+      await onSelect(authMethod, SettingScope.User);
+      return;
+    }
     const error = await validateAuthMethodWithSettings(
       authMethod,
       settings,

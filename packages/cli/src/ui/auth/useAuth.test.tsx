@@ -38,6 +38,8 @@ describe('useAuth', () => {
     vi.resetAllMocks();
     delete process.env['GEMINI_API_KEY'];
     delete process.env['GEMINI_DEFAULT_AUTH_TYPE'];
+    delete process.env['AI_PROVIDER'];
+    delete process.env['LLM_PROVIDER'];
   });
 
   afterEach(() => {
@@ -246,6 +248,23 @@ describe('useAuth', () => {
       expect(mockConfig.refreshAuth).toHaveBeenCalledWith(AuthType.USE_GEMINI);
       expect(result.current.authState).toBe(AuthState.Authenticated);
       expect(result.current.apiKeyDefaultValue).toBe('env-key');
+    });
+
+    it('should use OpenAI-compatible auth when provider env is set', async () => {
+      process.env['AI_PROVIDER'] = 'groq';
+
+      const { result } = await renderHook(() =>
+        useAuthCommand(createSettings(AuthType.USE_GEMINI), mockConfig),
+      );
+
+      await act(async () => {
+        deferredRefreshAuth.resolve();
+      });
+
+      expect(mockConfig.refreshAuth).toHaveBeenCalledWith(
+        AuthType.OPENAI_COMPATIBLE,
+      );
+      expect(result.current.authState).toBe(AuthState.Authenticated);
     });
 
     it('should prioritize env key over stored key when both are present', async () => {

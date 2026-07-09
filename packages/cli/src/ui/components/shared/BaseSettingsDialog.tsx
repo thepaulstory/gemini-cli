@@ -47,6 +47,8 @@ export interface SettingsDialogItem {
   rawValue?: SettingsValue;
   /** Optional pre-formatted edit buffer value for complex types */
   editValue?: string;
+  /** Masks the value while displaying and editing sensitive settings. */
+  maskValue?: boolean;
 }
 
 /**
@@ -495,25 +497,39 @@ export function BaseSettingsDialog({
               // Compute display value with edit mode cursor
               let displayValue: string;
               if (editingKey === item.key) {
+                const renderedEditBuffer = item.maskValue
+                  ? '*'.repeat(cpLen(editBuffer))
+                  : editBuffer;
                 // Show edit buffer with cursor highlighting
-                if (cursorVisible && editCursorPos < cpLen(editBuffer)) {
+                if (
+                  cursorVisible &&
+                  editCursorPos < cpLen(renderedEditBuffer)
+                ) {
                   // Cursor is in the middle or at start of text
-                  const beforeCursor = cpSlice(editBuffer, 0, editCursorPos);
+                  const beforeCursor = cpSlice(
+                    renderedEditBuffer,
+                    0,
+                    editCursorPos,
+                  );
                   const atCursor = cpSlice(
-                    editBuffer,
+                    renderedEditBuffer,
                     editCursorPos,
                     editCursorPos + 1,
                   );
-                  const afterCursor = cpSlice(editBuffer, editCursorPos + 1);
+                  const afterCursor = cpSlice(
+                    renderedEditBuffer,
+                    editCursorPos + 1,
+                  );
                   displayValue =
                     beforeCursor + chalk.inverse(atCursor) + afterCursor;
-                } else if (editCursorPos >= cpLen(editBuffer)) {
+                } else if (editCursorPos >= cpLen(renderedEditBuffer)) {
                   // Cursor is at the end - show inverted space
                   displayValue =
-                    editBuffer + (cursorVisible ? chalk.inverse(' ') : ' ');
+                    renderedEditBuffer +
+                    (cursorVisible ? chalk.inverse(' ') : ' ');
                 } else {
                   // Cursor not visible
-                  displayValue = editBuffer;
+                  displayValue = renderedEditBuffer;
                 }
               } else {
                 displayValue = item.displayValue;
@@ -576,7 +592,9 @@ export function BaseSettingsDialog({
                             editingKey === item.key && cursorVisible
                           }
                           terminalCursorPosition={cpIndexToOffset(
-                            editBuffer,
+                            item.maskValue
+                              ? '*'.repeat(cpLen(editBuffer))
+                              : editBuffer,
                             editCursorPos,
                           )}
                         >

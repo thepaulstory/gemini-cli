@@ -40,6 +40,8 @@ import { NewAgentsNotification } from './NewAgentsNotification.js';
 import { AgentConfigDialog } from './AgentConfigDialog.js';
 import { PolicyUpdateDialog } from './PolicyUpdateDialog.js';
 import { LoginRestartDialog } from '../auth/LoginRestartDialog.js';
+import { ProviderConfigDialog } from './ProviderConfigDialog.js';
+import { AuthState } from '../types.js';
 
 interface DialogManagerProps {
   addItem: UseHistoryManagerReturn['addItem'];
@@ -302,6 +304,19 @@ export const DialogManager = ({
           onCancel={uiActions.handleApiKeyCancel}
           error={uiState.authError}
           defaultValue={uiState.apiKeyDefaultValue}
+        />
+      </Box>
+    );
+  }
+  if (uiState.isAwaitingProviderConfig) {
+    return (
+      <Box flexDirection="column">
+        <ProviderConfigDialog
+          config={config}
+          availableTerminalHeight={terminalHeight - staticExtraHeight}
+          onClose={() => {
+            uiActions.setAuthState(AuthState.Unauthenticated);
+          }}
         />
       </Box>
     );

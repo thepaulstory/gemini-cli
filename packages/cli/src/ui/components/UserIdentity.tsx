@@ -21,6 +21,7 @@ interface UserIdentityProps {
 
 export const UserIdentity: React.FC<UserIdentityProps> = ({ config }) => {
   const authType = config.getContentGeneratorConfig()?.authType;
+  const providerConfig = config.getModelProviderConfig?.();
   const [email, setEmail] = useState<string | undefined>();
 
   useEffect(() => {
@@ -38,6 +39,12 @@ export const UserIdentity: React.FC<UserIdentityProps> = ({ config }) => {
   );
 
   const isUltra = useMemo(() => isUltraTier(tierName), [tierName]);
+  const providerLabel =
+    providerConfig?.provider && providerConfig.provider !== 'google'
+      ? (providerConfig.displayName ??
+        providerConfig.profile ??
+        providerConfig.provider)
+      : undefined;
 
   if (!authType) {
     return null;
@@ -56,6 +63,7 @@ export const UserIdentity: React.FC<UserIdentityProps> = ({ config }) => {
           ) : (
             `Authenticated with ${authType}`
           )}
+          {providerLabel ? ` · provider ${providerLabel}` : ''}
         </Text>
         <Text color={theme.text.secondary}> /auth</Text>
       </Box>

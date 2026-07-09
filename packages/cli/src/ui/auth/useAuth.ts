@@ -13,6 +13,7 @@ import {
   debugLogger,
   isAccountSuspendedError,
   ProjectIdRequiredError,
+  getAuthTypeFromEnv,
 } from '@google/gemini-cli-core';
 import { getErrorMessage } from '@google/gemini-cli-core';
 import { AuthState } from '../types.js';
@@ -91,9 +92,26 @@ export const useAuthCommand = (
         return;
       }
 
-      const authType = settings.merged.security.auth.selectedType;
+      const envAuthType = getAuthTypeFromEnv();
+      const authType =
+        envAuthType === AuthType.OPENAI_COMPATIBLE
+          ? AuthType.OPENAI_COMPATIBLE
+          : settings.merged.security.auth.selectedType;
       if (!authType) {
-        if (process.env['GEMINI_API_KEY']) {
+        const providerEnv = (
+          process.env['AI_PROVIDER'] ||
+          process.env['LLM_PROVIDER'] ||
+          ''
+        ).toLowerCase();
+        if (
+          providerEnv &&
+          providerEnv !== 'google' &&
+          providerEnv !== 'gemini'
+        ) {
+          onAuthError(
+            `Existing provider detected (${providerEnv}). Select "OpenAI-compatible provider" option to use it.`,
+          );
+        } else if (process.env['GEMINI_API_KEY']) {
           onAuthError(
             'Existing API key detected (GEMINI_API_KEY). Select "Gemini API Key" option to use it.',
           );

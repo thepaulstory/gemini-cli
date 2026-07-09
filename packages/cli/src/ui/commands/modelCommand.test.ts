@@ -170,6 +170,76 @@ describe('modelCommand', () => {
     });
   });
 
+  describe('provider subcommand', () => {
+    it('should switch provider profile and model', async () => {
+      const providerCommand = modelCommand.subCommands?.find(
+        (c) => c.name === 'provider',
+      );
+      expect(providerCommand).toBeDefined();
+
+      const mockSetModelProviderProfile = vi.fn().mockResolvedValue(undefined);
+      const mockGetModelProviderConfig = vi.fn().mockReturnValue({
+        apiKeyEnv: 'GROQ_API_KEY',
+      });
+      mockContext.services.agentContext = {
+        setModelProviderProfile: mockSetModelProviderProfile,
+        getModelProviderConfig: mockGetModelProviderConfig,
+        getHasAccessToPreviewModel: vi.fn().mockReturnValue(true),
+        getUserId: vi.fn().mockReturnValue('test-user'),
+        getUsageStatisticsEnabled: vi.fn().mockReturnValue(true),
+        getSessionId: vi.fn().mockReturnValue('test-session'),
+        getContentGeneratorConfig: vi
+          .fn()
+          .mockReturnValue({ authType: 'openai-compatible' }),
+        isInteractive: vi.fn().mockReturnValue(true),
+        getExperiments: vi.fn().mockReturnValue({ experimentIds: [] }),
+        getPolicyEngine: vi.fn().mockReturnValue({
+          getApprovalMode: vi.fn().mockReturnValue('auto'),
+        }),
+        get config() {
+          return this;
+        },
+      } as unknown as Config;
+
+      await providerCommand!.action!(mockContext, 'groq qwen/qwen3.6-27b');
+
+      expect(mockSetModelProviderProfile).toHaveBeenCalledWith(
+        'groq',
+        'qwen/qwen3.6-27b',
+        true,
+      );
+      expect(mockContext.ui.addItem).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: MessageType.INFO,
+          text: expect.stringContaining('Provider set to Groq'),
+        }),
+      );
+    });
+  });
+
+  describe('environment subcommand', () => {
+    it('opens the persistent provider environment editor', async () => {
+      const environmentCommand = modelCommand.subCommands?.find(
+        (command) => command.name === 'environment',
+      );
+      expect(environmentCommand).toBeDefined();
+      mockContext.services.agentContext = {
+        get config() {
+          return this;
+        },
+      } as unknown as Config;
+
+      const result = await environmentCommand!.action!(mockContext, '');
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          type: 'custom_dialog',
+          component: expect.any(Object),
+        }),
+      );
+    });
+  });
+
   it('should have the correct name and description', () => {
     expect(modelCommand.name).toBe('model');
     expect(modelCommand.description).toBe('Manage model configuration');

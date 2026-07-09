@@ -604,7 +604,7 @@ function workflowVerifyStandardsSuffix(interactive: boolean): string {
     : '';
 }
 
-const NEW_APP_IMPLEMENTATION_GUIDANCE = `When starting ensure you scaffold the application using '${SHELL_TOOL_NAME}' for commands like 'npm init', 'npx create-react-app'. Aim for full scope completion. Proactively create or source necessary placeholder assets (e.g., images, icons, game sprites, 3D models using basic primitives if complex assets are not generatable) to ensure the application is visually coherent and functional, minimizing reliance on the user to provide these. If the model can generate simple assets (e.g., a uniformly colored square sprite, a simple 3D cube), it should do so. Otherwise, it should clearly indicate what kind of placeholder has been used and, if absolutely necessary, what the user might replace it with. Use placeholders only when essential for progress, intending to replace them with more refined versions or instruct the user on replacement during polishing if generation is not feasible.`;
+const NEW_APP_IMPLEMENTATION_GUIDANCE = `When starting ensure you scaffold the application using '${SHELL_TOOL_NAME}' for commands like 'npm init', 'npx create-react-app'. Prefer non-interactive flags; if a scaffolding command may still prompt, run it in the background, inspect it with 'read_background_output', and answer prompts with 'send_shell_input'. Aim for full scope completion. Proactively create or source necessary placeholder assets (e.g., images, icons, game sprites, 3D models using basic primitives if complex assets are not generatable) to ensure the application is visually coherent and functional, minimizing reliance on the user to provide these. If the model can generate simple assets (e.g., a uniformly colored square sprite, a simple 3D cube), it should do so. Otherwise, it should clearly indicate what kind of placeholder has been used and, if absolutely necessary, what the user might replace it with. Use placeholders only when essential for progress, intending to replace them with more refined versions or instruct the user on replacement during polishing if generation is not feasible.`;
 
 function newApplicationSteps(options: PrimaryWorkflowsOptions): string {
   const interactive = options.interactive;
@@ -689,7 +689,7 @@ function toolUsageInteractive(
 ): string {
   if (interactive) {
     const focusHint = interactiveShellEnabled
-      ? ' If you choose to execute an interactive command consider letting the user know they can press `tab` to focus into the shell to provide input.'
+      ? ' If an interactive command must receive input, run it in the background, inspect it with `read_background_output`, and send responses with `send_shell_input`; also consider letting the user know they can press `tab` to focus into the shell to provide input.'
       : '';
     return `
     - **Background Processes:** To run a command in the background, set the \`${SHELL_PARAM_IS_BACKGROUND}\` parameter to true.

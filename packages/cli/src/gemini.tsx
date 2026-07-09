@@ -38,6 +38,7 @@ import {
   getProjectHash,
   loadConversationRecord,
   type MessageRecord,
+  getAuthTypeFromEnv,
 } from '@google/gemini-cli-core';
 
 import { loadCliConfig, parseArguments } from './config/config.js';
@@ -510,20 +511,18 @@ export async function main() {
   let initialAuthFailed = false;
   if (!settings.merged.security.auth.useExternal && !argv.isCommand) {
     try {
-      if (
-        partialConfig.isInteractive() &&
-        settings.merged.security.auth.selectedType
-      ) {
-        const err = await validateAuthMethod(
-          settings.merged.security.auth.selectedType,
-        );
+      const envAuthType = getAuthTypeFromEnv();
+      const selectedAuthType =
+        envAuthType === AuthType.OPENAI_COMPATIBLE
+          ? AuthType.OPENAI_COMPATIBLE
+          : settings.merged.security.auth.selectedType;
+      if (partialConfig.isInteractive() && selectedAuthType) {
+        const err = await validateAuthMethod(selectedAuthType);
         if (err) {
           throw new Error(err);
         }
 
-        await partialConfig.refreshAuth(
-          settings.merged.security.auth.selectedType,
-        );
+        await partialConfig.refreshAuth(selectedAuthType);
       } else if (!partialConfig.isInteractive()) {
         const authType = await validateNonInteractiveAuth(
           settings.merged.security.auth.selectedType,
@@ -683,7 +682,11 @@ export async function main() {
     // Handle --list-sessions flag
     if (config.getListSessions()) {
       // Attempt auth for summary generation (gracefully skips if not configured)
-      const authType = settings.merged.security.auth.selectedType;
+      const envAuthType = getAuthTypeFromEnv();
+      const authType =
+        envAuthType === AuthType.OPENAI_COMPATIBLE
+          ? AuthType.OPENAI_COMPATIBLE
+          : settings.merged.security.auth.selectedType;
       if (authType) {
         try {
           await config.refreshAuth(authType);

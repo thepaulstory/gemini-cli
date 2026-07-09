@@ -490,6 +490,39 @@ describe('ShellTool', () => {
       await promise;
     });
 
+    it('should auto-background interactive scaffolding commands', async () => {
+      vi.useFakeTimers();
+      const invocation = shellTool.build({
+        command: 'npm create vite@latest my-app',
+      });
+      const promise = invocation.execute({ abortSignal: mockAbortSignal });
+
+      resolveShellExecution({ pid: 12345 });
+      await vi.advanceTimersByTimeAsync(200);
+
+      expect(mockShellBackground).toHaveBeenCalledWith(
+        12345,
+        'default',
+        'npm create vite@latest my-app',
+      );
+
+      const result = await promise;
+      expect(result.llmContent).toContain('automatically moved to background');
+      vi.useRealTimers();
+    });
+
+    it('should not auto-background scaffolding commands with non-interactive flags', async () => {
+      const invocation = shellTool.build({
+        command: 'npm create vite@latest my-app -- --template react',
+      });
+      const promise = invocation.execute({ abortSignal: mockAbortSignal });
+
+      resolveShellExecution({ pid: 12345 });
+      await promise;
+
+      expect(mockShellBackground).not.toHaveBeenCalled();
+    });
+
     itWindowsOnly(
       'should not wrap command on windows',
       async () => {

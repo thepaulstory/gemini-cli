@@ -31,10 +31,16 @@ import { RecordingContentGenerator } from './recordingContentGenerator.js';
 import { getVersion, resolveModel } from '../../index.js';
 import type { LlmRole } from '../telemetry/llmRole.js';
 import { ModelMappingContentGenerator } from './modelMappingContentGenerator.js';
-import { CCPA_AI_MODEL_MAPPINGS, DEFAULT_GEMINI_MODEL } from '../config/models.js';
+import { CCPA_AI_MODEL_MAPPINGS } from '../config/models.js';
 import { type ModelProvider } from './model-provider.js';
 import { GoogleGeminiProvider } from './providers/google-gemini-provider.js';
 import { OpenAICompatibleProvider } from './providers/openai-compatible-provider.js';
+import { ModelProviderContentGenerator } from './modelProviderContentGenerator.js';
+import {
+  isOpenAICompatibleProviderConfigured,
+  resolveModelProviderConfigFromEnv,
+  type ModelProviderRuntimeConfig,
+} from './providerProfiles.js';
 
 /**
  * Interface abstracting the core functionalities for generating content and counting tokens.
@@ -56,12 +62,17 @@ export interface ContentGenerator {
 
   embedContent(request: EmbedContentParameters): Promise<EmbedContentResponse>;
 
+  getProvider?(): ModelProvider;
+
   userTier?: UserTierId;
 
   userTierName?: string;
 
   paidTier?: GeminiUserTier;
 }
+
+export type ContentGeneratorWithProvider = ContentGenerator &
+  Required<Pick<ContentGenerator, 'getProvider'>>;
 
 export enum AuthType {
   LOGIN_WITH_GOOGLE = 'oauth-personal',
@@ -70,6 +81,7 @@ export enum AuthType {
   LEGACY_CLOUD_SHELL = 'cloud-shell',
   COMPUTE_ADC = 'compute-default-credentials',
   GATEWAY = 'gateway',
+  OPENAI_COMPATIBLE = 'openai-compatible',
 }
 
 /**
@@ -81,6 +93,9 @@ export enum AuthType {
  * 3. GEMINI_API_KEY -> USE_GEMINI
  */
 export function getAuthTypeFromEnv(): AuthType | undefined {
+  if (isOpenAICompatibleProviderConfigured()) {
+    return AuthType.OPENAI_COMPATIBLE;
+  }
   if (process.env['GOOGLE_GENAI_USE_GCA'] === 'true') {
     return AuthType.LOGIN_WITH_GOOGLE;
   }
@@ -110,6 +125,7 @@ export type ContentGeneratorConfig = {
   baseUrl?: string;
   customHeaders?: Record<string, string>;
   vertexAiRouting?: VertexAiRoutingConfig;
+  modelProvider?: ModelProviderRuntimeConfig;
 };
 
 export type VertexAiRequestType = 'dedicated' | 'shared';
@@ -155,7 +171,20 @@ export async function createContentGeneratorConfig(
     baseUrl,
     customHeaders,
     vertexAiRouting,
+    modelProvider: config?.getModelProviderConfig?.(),
   };
+
+  if (authType === AuthType.OPENAI_COMPATIBLE) {
+    const configuredProvider = config?.getModelProviderConfig?.();
+    contentGeneratorConfig.modelProvider =
+      configuredProvider?.provider === 'openai-compatible'
+        ? configuredProvider
+        : resolveModelProviderConfigFromEnv(process.env, {
+            defaultProfile: 'openai-compatible',
+            inferProfileFromApiKey: true,
+          });
+    return contentGeneratorConfig;
+  }
 
   // If we are using Google auth or we are in Cloud Shell, there is nothing else to validate for now.
   // Return before touching the API-key keychain: on Linux without a Secret Service
@@ -211,7 +240,35 @@ export async function createContentGenerator(
   config: ContentGeneratorConfig,
   gcConfig: Config,
   sessionId?: string,
-): Promise<ContentGenerator & { getProvider: () => ModelProvider }> {
+): Promise<ContentGeneratorWithProvider> {
+  let modelProviderConfig =
+    config.modelProvider ??
+    gcConfig.getModelProviderConfig?.() ??
+    resolveModelProviderConfigFromEnv();
+
+  if (
+    config.authType === AuthType.OPENAI_COMPATIBLE &&
+    modelProviderConfig.provider !== 'openai-compatible'
+  ) {
+    modelProviderConfig = resolveModelProviderConfigFromEnv(process.env, {
+      defaultProfile: 'openai-compatible',
+      inferProfileFromApiKey: true,
+    });
+  }
+
+  if (
+    modelProviderConfig.provider === 'openai-compatible' &&
+    config.authType === AuthType.OPENAI_COMPATIBLE
+  ) {
+    const provider = new OpenAICompatibleProvider({
+      baseUrl: modelProviderConfig.baseUrl,
+      apiKey: modelProviderConfig.apiKey,
+      model: modelProviderConfig.model,
+    });
+    const generator = new ModelProviderContentGenerator(provider);
+    return Object.assign(generator, { getProvider: () => provider });
+  }
+
   const generator = await (async () => {
     if (gcConfig.fakeResponsesNonStrict) {
       const fakeGenerator = await FakeContentGenerator.fromFile(
@@ -414,36 +471,29 @@ export async function createContentGenerator(
     );
   })();
 
-  const aiProvider = process.env['AI_PROVIDER'] || process.env['LLM_PROVIDER'] || 'google';
-  if (process.env['AI_PROVIDER'] && process.env['LLM_PROVIDER'] && process.env['AI_PROVIDER'] !== process.env['LLM_PROVIDER']) {
-      console.warn(`Both AI_PROVIDER and LLM_PROVIDER are set. Using AI_PROVIDER: ${process.env['AI_PROVIDER']}`);
-  }
-
   let provider: ModelProvider;
-  if (aiProvider === 'openai-compatible') {
-      provider = new OpenAICompatibleProvider({
-          baseUrl: process.env['LLM_BASE_URL'],
-          apiKey: process.env['LLM_API_KEY'] || process.env['OPENAI_API_KEY'],
-          model: process.env['AI_MODEL'] || process.env['LLM_MODEL'],
-      });
-  } else if (aiProvider === 'google') {
-      provider = new GoogleGeminiProvider(generator, config);
+  if (
+    modelProviderConfig.provider === 'openai-compatible' &&
+    config.authType === AuthType.OPENAI_COMPATIBLE
+  ) {
+    provider = new OpenAICompatibleProvider({
+      baseUrl: modelProviderConfig.baseUrl,
+      apiKey: modelProviderConfig.apiKey,
+      model: modelProviderConfig.model,
+    });
+  } else if (modelProviderConfig.provider === 'google') {
+    provider = new GoogleGeminiProvider(generator, config);
   } else {
-      throw new Error(`Unsupported AI_PROVIDER: ${aiProvider}`);
+    throw new Error(`Unsupported AI_PROVIDER: ${modelProviderConfig.provider}`);
   }
 
   if (gcConfig.recordResponses) {
-    const recordingGenerator = new RecordingContentGenerator(generator, gcConfig.recordResponses);
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-    return {
-        ...recordingGenerator,
-        getProvider: () => provider,
-    } as any;
+    const recordingGenerator = new RecordingContentGenerator(
+      generator,
+      gcConfig.recordResponses,
+    );
+    return Object.assign(recordingGenerator, { getProvider: () => provider });
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
-  return {
-      ...generator,
-      getProvider: () => provider,
-  } as any;
+  return Object.assign(generator, { getProvider: () => provider });
 }

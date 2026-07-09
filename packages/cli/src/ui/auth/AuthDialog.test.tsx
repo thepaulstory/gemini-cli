@@ -17,7 +17,7 @@ import {
 } from 'vitest';
 import { AuthDialog } from './AuthDialog.js';
 import { AuthType, type Config, debugLogger } from '@google/gemini-cli-core';
-import type { LoadedSettings } from '../../config/settings.js';
+import { SettingScope, type LoadedSettings } from '../../config/settings.js';
 import { AuthState } from '../types.js';
 import { RadioButtonSelect } from '../components/shared/RadioButtonSelect.js';
 import { useKeypress } from '../hooks/useKeypress.js';
@@ -81,6 +81,8 @@ describe('AuthDialog', () => {
     vi.stubEnv('GEMINI_CLI_USE_COMPUTE_ADC', undefined as unknown as string);
     vi.stubEnv('GEMINI_DEFAULT_AUTH_TYPE', undefined as unknown as string);
     vi.stubEnv('GEMINI_API_KEY', undefined as unknown as string);
+    vi.stubEnv('AI_PROVIDER', undefined as unknown as string);
+    vi.stubEnv('LLM_PROVIDER', undefined as unknown as string);
 
     props = {
       config: {
@@ -342,6 +344,25 @@ describe('AuthDialog', () => {
 
       expect(props.setAuthState).toHaveBeenCalledWith(
         AuthState.AwaitingApiKeyInput,
+      );
+      unmount();
+    });
+
+    it('opens provider configuration before validating OpenAI-compatible auth', async () => {
+      const { unmount } = await renderWithProviders(<AuthDialog {...props} />);
+      const { onSelect: handleAuthSelect } =
+        mockedRadioButtonSelect.mock.calls[0][0];
+
+      await handleAuthSelect(AuthType.OPENAI_COMPATIBLE);
+
+      expect(mockedValidateAuthMethod).not.toHaveBeenCalled();
+      expect(props.settings.setValue).toHaveBeenCalledWith(
+        SettingScope.User,
+        'security.auth.selectedType',
+        AuthType.OPENAI_COMPATIBLE,
+      );
+      expect(props.setAuthState).toHaveBeenCalledWith(
+        AuthState.AwaitingProviderConfig,
       );
       unmount();
     });

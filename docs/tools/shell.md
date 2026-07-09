@@ -118,6 +118,14 @@ When an interactive command is running, you can send input to it from the Gemini
 CLI. To focus on the interactive shell, press `Tab`. The terminal output,
 including complex TUIs, will be rendered correctly.
 
+When the agent needs to drive an interactive process itself, it should start the
+command with `is_background: true`, inspect prompts with
+`read_background_output`, and send responses or key presses with
+`send_shell_input`. This lets scaffolding commands such as `npm create`,
+`create-vite`, and similar CLIs continue without waiting for manual terminal
+input. Known interactive scaffolders are also moved to the background
+automatically if the model starts them in the foreground.
+
 ## Important notes
 
 - **Security:** Be cautious when executing commands, especially those

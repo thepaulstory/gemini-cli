@@ -569,7 +569,7 @@ A good instruction should concisely answer:
 
 exports[`coreTools snapshots for specific models > Model: gemini-2.5-pro > snapshot for tool: run_shell_command 1`] = `
 {
-  "description": "This tool executes a given shell command as \`bash -c <command>\`. To run a command in the background, set the \`is_background\` parameter to true. Do NOT use \`&\` to background commands. Command is executed as a subprocess that leads its own process group. Command process group can be terminated as \`kill -- -PGID\` or signaled as \`kill -s SIGNAL -- -PGID\`.
+  "description": "This tool executes a given shell command as \`bash -c <command>\`. To run a command in the background, set the \`is_background\` parameter to true. Do NOT use \`&\` to background commands. For commands that may prompt for input, run them in the background, inspect them with \`read_background_output\`, and respond with \`send_shell_input\`. Command is executed as a subprocess that leads its own process group. Command process group can be terminated as \`kill -- -PGID\` or signaled as \`kill -s SIGNAL -- -PGID\`.
 
       Efficiency Guidelines:
       - Quiet Flags: Always prefer silent or quiet flags (e.g., \`npm install --silent\`, \`git --no-pager\`) to reduce output volume while still capturing necessary information.
@@ -632,7 +632,7 @@ exports[`coreTools snapshots for specific models > Model: gemini-2.5-pro > snaps
         "type": "string",
       },
       "is_background": {
-        "description": "Set to true if this command should be run in the background (e.g. for long-running servers or watchers). The command will be started, allowed to run for a brief moment to check for immediate errors, and then moved to the background.",
+        "description": "Set to true if this command should be run in the background (e.g. for long-running servers, watchers, or interactive CLIs that may prompt for input). The command will be started, allowed to run for a brief moment to check for immediate errors, and then moved to the background.",
         "type": "boolean",
       },
     },
@@ -1343,7 +1343,7 @@ The user has the ability to modify the \`new_string\` content. If modified, this
 
 exports[`coreTools snapshots for specific models > Model: gemini-3-pro-preview > snapshot for tool: run_shell_command 1`] = `
 {
-  "description": "This tool executes a given shell command as \`bash -c <command>\`. To run a command in the background, set the \`is_background\` parameter to true. Do NOT use \`&\` to background commands. Command is executed as a subprocess that leads its own process group. Command process group can be terminated as \`kill -- -PGID\` or signaled as \`kill -s SIGNAL -- -PGID\`.
+  "description": "This tool executes a given shell command as \`bash -c <command>\`. To run a command in the background, set the \`is_background\` parameter to true. Do NOT use \`&\` to background commands. For commands that may prompt for input, run them in the background, inspect them with \`read_background_output\`, and respond with \`send_shell_input\`. Command is executed as a subprocess that leads its own process group. Command process group can be terminated as \`kill -- -PGID\` or signaled as \`kill -s SIGNAL -- -PGID\`.
 
       Efficiency Guidelines:
       - Quiet Flags: Always prefer silent or quiet flags (e.g., \`npm install --silent\`, \`git --no-pager\`) to reduce output volume while still capturing necessary information.
@@ -1406,7 +1406,7 @@ exports[`coreTools snapshots for specific models > Model: gemini-3-pro-preview >
         "type": "string",
       },
       "is_background": {
-        "description": "Set to true if this command should be run in the background (e.g. for long-running servers or watchers). The command will be started, allowed to run for a brief moment to check for immediate errors, and then moved to the background.",
+        "description": "Set to true if this command should be run in the background (e.g. for long-running servers, watchers, or interactive CLIs that may prompt for input). The command will be started, allowed to run for a brief moment to check for immediate errors, and then moved to the background.",
         "type": "boolean",
       },
     },

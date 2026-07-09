@@ -34,6 +34,33 @@ vi.mock('./apiKeyCredentialStorage.js', () => ({
 
 vi.mock('./fakeContentGenerator.js');
 
+function clearModelProviderEnv() {
+  for (const key of [
+    'AI_PROVIDER',
+    'AI_MODEL',
+    'AI_BASE_URL',
+    'AI_API_KEY',
+    'LLM_PROVIDER',
+    'LLM_MODEL',
+    'LLM_BASE_URL',
+    'LLM_API_KEY',
+    'OPENAI_API_KEY',
+    'GROQ_API_KEY',
+    'DEEPSEEK_API_KEY',
+    'DASHSCOPE_API_KEY',
+    'DASHSCOPE_BASE_URL',
+    'MOONSHOT_API_KEY',
+    'KIMI_API_KEY',
+    'KIMI_BASE_URL',
+    'GLM_API_KEY',
+    'GLM_BASE_URL',
+    'ZAI_API_KEY',
+    'BIGMODEL_API_KEY',
+  ]) {
+    vi.stubEnv(key, '');
+  }
+}
+
 const mockConfig = {
   getModel: vi.fn().mockReturnValue('gemini-pro'),
   getProxy: vi.fn().mockReturnValue(undefined),
@@ -51,6 +78,7 @@ const mockConfig = {
 
 describe('getAuthTypeFromEnv', () => {
   beforeEach(() => {
+    clearModelProviderEnv();
     vi.stubEnv('GEMINI_API_KEY', '');
   });
 
@@ -78,6 +106,11 @@ describe('getAuthTypeFromEnv', () => {
     expect(getAuthTypeFromEnv()).toBe(AuthType.USE_GEMINI);
   });
 
+  it('should detect OPENAI_COMPATIBLE when an OpenAI-compatible provider profile is configured', () => {
+    vi.stubEnv('AI_PROVIDER', 'groq');
+    expect(getAuthTypeFromEnv()).toBe(AuthType.OPENAI_COMPATIBLE);
+  });
+
   it('should detect COMPUTE_ADC when CLOUD_SHELL is true', () => {
     vi.stubEnv('CLOUD_SHELL', 'true');
     expect(getAuthTypeFromEnv()).toBe(AuthType.COMPUTE_ADC);
@@ -92,6 +125,7 @@ describe('createContentGenerator', () => {
   beforeEach(() => {
     resetVersionCache();
     vi.clearAllMocks();
+    clearModelProviderEnv();
     vi.stubEnv('ANTIGRAVITY_CLI_ALIAS', '');
     vi.stubEnv('GOOGLE_CLOUD_LOCATION', '');
   });
@@ -119,9 +153,10 @@ describe('createContentGenerator', () => {
     expect(FakeContentGenerator.fromFile).toHaveBeenCalledWith(
       fakeResponsesFile,
     );
-    expect(generator).toEqual(
+    expect(generator).toMatchObject(
       new LoggingContentGenerator(mockGenerator, mockConfigWithFake),
     );
+    expect(generator.getProvider).toEqual(expect.any(Function));
   });
 
   it('should create a RecordingContentGenerator', async () => {
@@ -153,12 +188,13 @@ describe('createContentGenerator', () => {
       mockConfig,
     );
     expect(createCodeAssistContentGenerator).toHaveBeenCalled();
-    expect(generator).toEqual(
+    expect(generator).toMatchObject(
       new LoggingContentGenerator(
         new ModelMappingContentGenerator(mockGenerator, CCPA_AI_MODEL_MAPPINGS),
         mockConfig,
       ),
     );
+    expect(generator.getProvider).toEqual(expect.any(Function));
   });
 
   it('should create a CodeAssistContentGenerator when AuthType is COMPUTE_ADC', async () => {
@@ -173,12 +209,30 @@ describe('createContentGenerator', () => {
       mockConfig,
     );
     expect(createCodeAssistContentGenerator).toHaveBeenCalled();
-    expect(generator).toEqual(
+    expect(generator).toMatchObject(
       new LoggingContentGenerator(
         new ModelMappingContentGenerator(mockGenerator, CCPA_AI_MODEL_MAPPINGS),
         mockConfig,
       ),
     );
+    expect(generator.getProvider).toEqual(expect.any(Function));
+  });
+
+  it('should create an OpenAI-compatible provider-backed content generator', async () => {
+    const generator = await createContentGenerator(
+      {
+        authType: AuthType.OPENAI_COMPATIBLE,
+        modelProvider: {
+          provider: 'openai-compatible',
+          baseUrl: 'https://api.example.com/v1',
+          apiKey: 'test-key',
+        },
+      },
+      mockConfig,
+    );
+
+    expect(generator.getProvider().name).toBe('openai-compatible');
+    expect(GoogleGenAI).not.toHaveBeenCalled();
   });
 
   it('should create a GoogleGenAI content generator', async () => {
@@ -218,9 +272,10 @@ describe('createContentGenerator', () => {
         }),
       }),
     });
-    expect(generator).toEqual(
+    expect(generator).toMatchObject(
       new LoggingContentGenerator(mockGenerator.models, mockConfig),
     );
+    expect(generator.getProvider).toEqual(expect.any(Function));
   });
 
   it('should use standard User-Agent for a2a-server running outside VS Code', async () => {
@@ -831,9 +886,10 @@ describe('createContentGenerator', () => {
         },
       }),
     });
-    expect(generator).toEqual(
+    expect(generator).toMatchObject(
       new LoggingContentGenerator(mockGenerator.models, mockConfig),
     );
+    expect(generator.getProvider).toEqual(expect.any(Function));
   });
 
   it('should pass apiVersion to GoogleGenAI when GOOGLE_GENAI_API_VERSION is set', async () => {
@@ -1408,6 +1464,7 @@ describe('createContentGeneratorConfig', () => {
     // Reset modules to re-evaluate imports and environment variables
     vi.resetModules();
     vi.clearAllMocks();
+    clearModelProviderEnv();
   });
 
   afterEach(() => {
@@ -1484,6 +1541,68 @@ describe('createContentGeneratorConfig', () => {
     );
     expect(config.vertexai).toBe(true);
     expect(config.apiKey).toBeUndefined();
+  });
+
+  it('should configure OpenAI-compatible provider settings from env', async () => {
+    vi.stubEnv('AI_PROVIDER', 'groq');
+    vi.stubEnv('GROQ_API_KEY', 'env-groq-key');
+    vi.stubEnv('AI_MODEL', 'qwen/qwen3.6-27b');
+
+    const config = await createContentGeneratorConfig(
+      mockConfig,
+      AuthType.OPENAI_COMPATIBLE,
+    );
+
+    expect(config.modelProvider).toEqual(
+      expect.objectContaining({
+        provider: 'openai-compatible',
+        profile: 'groq',
+        baseUrl: 'https://api.groq.com/openai/v1',
+        apiKey: 'env-groq-key',
+        model: 'qwen/qwen3.6-27b',
+      }),
+    );
+  });
+
+  it('should infer Groq provider settings for explicit OpenAI-compatible auth', async () => {
+    vi.stubEnv('GROQ_API_KEY', 'env-groq-key');
+    vi.stubEnv('AI_MODEL', 'qwen/qwen3.6-27b');
+
+    const config = await createContentGeneratorConfig(
+      mockConfig,
+      AuthType.OPENAI_COMPATIBLE,
+    );
+
+    expect(config.modelProvider).toEqual(
+      expect.objectContaining({
+        provider: 'openai-compatible',
+        profile: 'groq',
+        baseUrl: 'https://api.groq.com/openai/v1',
+        apiKey: 'env-groq-key',
+        model: 'qwen/qwen3.6-27b',
+      }),
+    );
+  });
+
+  it('should use custom OpenAI-compatible settings when no provider profile is set', async () => {
+    vi.stubEnv('LLM_BASE_URL', 'https://api.example.com/v1');
+    vi.stubEnv('LLM_API_KEY', 'env-openai-key');
+    vi.stubEnv('LLM_MODEL', 'custom-model');
+
+    const config = await createContentGeneratorConfig(
+      mockConfig,
+      AuthType.OPENAI_COMPATIBLE,
+    );
+
+    expect(config.modelProvider).toEqual(
+      expect.objectContaining({
+        provider: 'openai-compatible',
+        profile: 'openai-compatible',
+        baseUrl: 'https://api.example.com/v1',
+        apiKey: 'env-openai-key',
+        model: 'custom-model',
+      }),
+    );
   });
 
   it('should not configure for Vertex AI if required env vars are empty', async () => {

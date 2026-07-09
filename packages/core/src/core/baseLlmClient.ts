@@ -145,8 +145,11 @@ export class BaseLlmClient {
     const resolvedModelConfig =
       this.config.modelConfigService.getResolvedConfig(modelConfigKey);
     let model = resolvedModelConfig.model;
-    if ((model === 'auto' || model === 'gemini-2.0-flash') && (process.env['AI_MODEL'] || process.env['LLM_MODEL'])) {
-        model = process.env['AI_MODEL'] || process.env['LLM_MODEL'] || model;
+    if (
+      (model === 'auto' || model === 'gemini-2.0-flash') &&
+      (process.env['AI_MODEL'] || process.env['LLM_MODEL'])
+    ) {
+      model = process.env['AI_MODEL'] || process.env['LLM_MODEL'] || model;
     }
 
     const shouldRetryOnContent = (response: GenerateContentResponse) => {
@@ -351,18 +354,20 @@ export class BaseLlmClient {
           config: finalConfig,
           contents,
         };
-        const provider = (this.contentGenerator as any).getProvider?.();
+        const provider = this.contentGenerator.getProvider?.();
         if (provider) {
-            return provider.generateContent({
-                model: currentModel,
-                contents,
-                systemInstruction: finalConfig.systemInstruction,
-                tools: finalConfig.tools,
-                generationConfig: finalConfig,
-                abortSignal,
-                promptId,
-                role,
-            }).then(res => toGenerateContentResponse(res));
+          return provider
+            .generateContent({
+              model: currentModel,
+              contents,
+              systemInstruction: finalConfig.systemInstruction,
+              tools: finalConfig.tools,
+              generationConfig: finalConfig,
+              abortSignal,
+              promptId,
+              role,
+            })
+            .then((res) => toGenerateContentResponse(res));
         }
         return this.contentGenerator.generateContent(
           requestParams,

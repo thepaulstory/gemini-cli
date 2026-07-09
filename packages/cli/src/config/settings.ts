@@ -91,14 +91,34 @@ const AUTH_ENV_VAR_WHITELIST = [
   'GOOGLE_API_KEY',
   'GOOGLE_CLOUD_PROJECT',
   'GOOGLE_CLOUD_LOCATION',
+  'AI_PROVIDER',
+  'AI_MODEL',
+  'AI_BASE_URL',
+  'AI_API_KEY',
+  'LLM_PROVIDER',
+  'LLM_MODEL',
+  'LLM_BASE_URL',
+  'LLM_API_KEY',
+  'OPENAI_API_KEY',
+  'GROQ_API_KEY',
+  'DEEPSEEK_API_KEY',
+  'DASHSCOPE_API_KEY',
+  'DASHSCOPE_BASE_URL',
+  'MOONSHOT_API_KEY',
+  'KIMI_API_KEY',
+  'KIMI_BASE_URL',
+  'GLM_API_KEY',
+  'GLM_BASE_URL',
+  'ZAI_API_KEY',
+  'BIGMODEL_API_KEY',
 ];
 
 /**
  * Sanitizes an environment variable value to prevent shell injection.
- * Restricts values to a safe character set: alphanumeric, -, _, ., /
+ * Restricts values to a safe character set: alphanumeric, -, _, ., /, :
  */
 export function sanitizeEnvVar(value: string): string {
-  return value.replace(/[^a-zA-Z0-9\-_./]/g, '');
+  return value.replace(/[^a-zA-Z0-9\-_./:]/g, '');
 }
 
 export function getSystemSettingsPath(): string {

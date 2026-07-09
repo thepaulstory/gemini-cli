@@ -114,4 +114,11 @@ describe('parseAndFormatApiError', () => {
     const expected = '[API Error: An unknown error occurred.]';
     expect(parseAndFormatApiError(error)).toBe(expected);
   });
+
+  it('should format a plain Error message', () => {
+    const error = new Error('OpenAI API error (400): invalid model');
+    expect(parseAndFormatApiError(error)).toBe(
+      '[API Error: OpenAI API error (400): invalid model]',
+    );
+  });
 });

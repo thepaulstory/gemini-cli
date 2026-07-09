@@ -27,6 +27,8 @@ import {
   PREVIEW_GEMINI_3_1_CUSTOM_TOOLS_MODEL,
   isProModel,
   getAutoModelDescription,
+  getAllModelProviderProfiles,
+  getModelProviderProfile,
 } from '@google/gemini-cli-core';
 import { useKeypress } from '../hooks/useKeypress.js';
 import { theme } from '../semantic-colors.js';
@@ -45,9 +47,12 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
   const [hasAccessToProModel, setHasAccessToProModel] = useState<boolean>(
     () => !(config?.getProModelNoAccessSync() ?? false),
   );
-  const [view, setView] = useState<'main' | 'manual'>(() =>
-    config?.getProModelNoAccessSync() ? 'manual' : 'main',
-  );
+  const [view, setView] = useState<
+    'main' | 'manual' | 'providers' | 'providerModels'
+  >(() => (config?.getProModelNoAccessSync() ? 'manual' : 'main'));
+  const [selectedProviderProfileId, setSelectedProviderProfileId] = useState<
+    string | undefined
+  >(config?.getModelProviderConfig?.().profile);
   const [persistMode, setPersistMode] = useState(false);
 
   useEffect(() => {
@@ -71,6 +76,12 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
   const selectedAuthType = settings.merged.security.auth.selectedType;
   const useCustomToolModel =
     useGemini31 && selectedAuthType === AuthType.USE_GEMINI;
+  const currentProvider = config?.getModelProviderConfig?.();
+  const providerSummary =
+    currentProvider?.displayName ??
+    currentProvider?.profile ??
+    currentProvider?.provider ??
+    'Google Gemini';
 
   const manualModelSelected = useMemo(() => {
     if (
@@ -105,7 +116,11 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
   useKeypress(
     (key) => {
       if (key.name === 'escape') {
-        if (view === 'manual' && hasAccessToProModel) {
+        if (view === 'providerModels') {
+          setView('providers');
+        } else if (view === 'providers') {
+          setView('main');
+        } else if (view === 'manual' && hasAccessToProModel) {
           setView('main');
         } else {
           onClose();
@@ -153,6 +168,13 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
         description: 'Manually select a model',
         key: 'Manual',
       });
+      list.push({
+        value: 'Providers',
+        title: `Provider (${providerSummary})`,
+        description:
+          'Switch between Google, Groq, Kimi, Qwen, GLM, and custom OpenAI-compatible profiles',
+        key: 'Providers',
+      });
       return list;
     }
 
@@ -176,6 +198,12 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
         description: 'Manually select a model',
         key: 'Manual',
       },
+      {
+        value: 'Providers',
+        title: `Provider (${providerSummary})`,
+        description: 'Switch provider profiles and pick a provider model',
+        key: 'Providers',
+      },
     ];
 
     return list;
@@ -187,6 +215,7 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
     useGemini3_5Flash,
     useCustomToolModel,
     hasAccessToProModel,
+    providerSummary,
   ]);
 
   const manualOptions = useMemo(() => {
@@ -298,8 +327,52 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
     config,
   ]);
 
+  const providerOptions = useMemo(
+    () =>
+      getAllModelProviderProfiles().map((profile) => ({
+        value: `provider:${profile.id}`,
+        title: profile.displayName,
+        description: profile.description,
+        key: `provider:${profile.id}`,
+      })),
+    [],
+  );
+
+  const providerModelOptions = useMemo(() => {
+    const profile = getModelProviderProfile(selectedProviderProfileId);
+    if (!profile) {
+      return [];
+    }
+
+    if (profile.models.length === 0) {
+      return [
+        {
+          value: `providerModel:${profile.id}:${preferredModel}`,
+          title: `Use current model (${preferredModel})`,
+          description:
+            'Useful for custom OpenAI-compatible endpoints configured with env vars',
+          key: `providerModel:${profile.id}:current`,
+        },
+      ];
+    }
+
+    return profile.models.map((model) => ({
+      value: `providerModel:${profile.id}:${model.id}`,
+      title: model.displayName ?? model.id,
+      description: model.description,
+      key: `providerModel:${profile.id}:${model.id}`,
+    }));
+  }, [preferredModel, selectedProviderProfileId]);
+
   const options = useMemo(() => {
-    const rawOptions = view === 'main' ? mainOptions : manualOptions;
+    const rawOptions =
+      view === 'main'
+        ? mainOptions
+        : view === 'manual'
+          ? manualOptions
+          : view === 'providers'
+            ? providerOptions
+            : providerModelOptions;
     const seen = new Set<string>();
     return rawOptions.filter((option) => {
       if (seen.has(option.value)) {
@@ -308,7 +381,7 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
       seen.add(option.value);
       return true;
     });
-  }, [view, mainOptions, manualOptions]);
+  }, [view, mainOptions, manualOptions, providerOptions, providerModelOptions]);
 
   // Calculate the initial index based on the preferred model.
   const initialIndex = useMemo(() => {
@@ -316,18 +389,50 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
     if (idx !== -1) {
       return idx;
     }
+    if (view === 'providers') {
+      const providerIdx = options.findIndex(
+        (option) => option.value === `provider:${currentProvider?.profile}`,
+      );
+      return providerIdx !== -1 ? providerIdx : 0;
+    }
     if (view === 'main') {
       const manualIdx = options.findIndex((o) => o.value === 'Manual');
       return manualIdx !== -1 ? manualIdx : 0;
     }
     return 0;
-  }, [preferredModel, options, view]);
+  }, [preferredModel, options, view, currentProvider?.profile]);
 
   // Handle selection internally (Autonomous Dialog).
   const handleSelect = useCallback(
     (model: string) => {
       if (model === 'Manual') {
         setView('manual');
+        return;
+      }
+      if (model === 'Providers') {
+        setView('providers');
+        return;
+      }
+      if (model.startsWith('provider:')) {
+        const profileId = model.slice('provider:'.length);
+        setSelectedProviderProfileId(profileId);
+        setView('providerModels');
+        return;
+      }
+      if (model.startsWith('providerModel:')) {
+        const [, profileId, modelId] = model.split(':');
+        if (config && profileId && modelId) {
+          void (async () => {
+            await config.setModelProviderProfile(
+              profileId,
+              modelId,
+              persistMode ? false : true,
+            );
+            const event = new ModelSlashCommandEvent(modelId);
+            logModelSlashCommand(config, event);
+            onClose();
+          })();
+        }
         return;
       }
 
@@ -341,6 +446,13 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
     [config, onClose, persistMode],
   );
 
+  const title =
+    view === 'providers'
+      ? 'Select Provider'
+      : view === 'providerModels'
+        ? `Select ${getModelProviderProfile(selectedProviderProfileId)?.displayName ?? 'Provider'} Model`
+        : 'Select Model';
+
   return (
     <Box
       borderStyle="round"
@@ -349,7 +461,7 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
       padding={1}
       width="100%"
     >
-      <Text bold>Select Model</Text>
+      <Text bold>{title}</Text>
 
       <Box marginTop={1}>
         <DescriptiveRadioButtonSelect
@@ -372,7 +484,9 @@ export function ModelDialog({ onClose }: ModelDialogProps): React.JSX.Element {
       </Box>
       <Box flexDirection="column">
         <Text color={theme.text.secondary}>
-          {'> To use a specific Gemini model on startup, use the --model flag.'}
+          {
+            '> Use --model for startup model selection. Use AI_PROVIDER or /model provider for provider selection.'
+          }
         </Text>
       </Box>
       <ModelQuotaDisplay

@@ -476,6 +476,30 @@ describe('BaseSettingsDialog', () => {
       unmount();
     });
 
+    it('should mask sensitive values while editing', async () => {
+      const secretItem: SettingsDialogItem = {
+        key: 'api-key',
+        label: 'API Key',
+        type: 'string',
+        displayValue: '********',
+        rawValue: 'super-secret',
+        editValue: 'super-secret',
+        maskValue: true,
+      };
+      const { lastFrame, stdin, waitUntilReady, unmount } = await renderDialog({
+        items: [secretItem],
+      });
+
+      await act(async () => {
+        stdin.write(TerminalKeys.ENTER);
+      });
+      await waitUntilReady();
+
+      expect(lastFrame()).not.toContain('super-secret');
+      expect(lastFrame()).toContain('********');
+      unmount();
+    });
+
     it('should enter edit mode for number items on Enter', async () => {
       const items = createMockItems(4);
       const numberItem = items.find((i) => i.type === 'number')!;

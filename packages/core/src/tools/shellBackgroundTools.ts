@@ -5,13 +5,17 @@
  */
 
 import fs from 'node:fs';
-import { ShellExecutionService } from '../services/shellExecutionService.js';
+import {
+  type BackgroundProcess,
+  ShellExecutionService,
+} from '../services/shellExecutionService.js';
 import {
   BaseDeclarativeTool,
   BaseToolInvocation,
   Kind,
   type ToolResult,
   type ExecuteOptions,
+  type ForcedToolDecision,
 } from './tools.js';
 
 import { ToolErrorType } from './tool-error.js';
@@ -21,6 +25,47 @@ import { isNodeError } from '../utils/errors.js';
 
 const MAX_BUFFER_LOAD_CAP_BYTES = 64 * 1024; // Safe 64KB buffer load Cap
 const DEFAULT_TAIL_LINES_COUNT = 100;
+const SHELL_EXECUTABLES = new Set([
+  'bash',
+  'cmd',
+  'fish',
+  'powershell',
+  'pwsh',
+  'sh',
+  'zsh',
+]);
+const REPL_EXECUTABLES = new Set(['node', 'php', 'py', 'python', 'python3']);
+const REMOTE_SHELL_EXECUTABLES = new Set(['ftp', 'sftp', 'ssh', 'telnet']);
+
+function getExecutableName(command: string): string {
+  const match = command.match(/^\s*(?:"([^"]+)"|'([^']+)'|(\S+))/);
+  const token = match?.[1] ?? match?.[2] ?? match?.[3] ?? '';
+  return (
+    token
+      .split(/[\\/]/)
+      .pop()
+      ?.replace(/\.exe$/i, '')
+      .toLowerCase() ?? ''
+  );
+}
+
+function commandMayEvaluateShellInput(command: string): boolean {
+  const executable = getExecutableName(command);
+  if (SHELL_EXECUTABLES.has(executable)) {
+    return true;
+  }
+  if (REMOTE_SHELL_EXECUTABLES.has(executable)) {
+    return true;
+  }
+  if (!REPL_EXECUTABLES.has(executable)) {
+    return false;
+  }
+  return (
+    command
+      .trim()
+      .match(/^(?:"[^"]+"|'[^']+'|\S+)(?:\s+(-i|--interactive))?\s*$/) !== null
+  );
+}
 
 // --- list_background_processes ---
 
@@ -292,6 +337,160 @@ export class ReadBackgroundOutputTool extends BaseDeclarativeTool<
     messageBus: MessageBus,
   ) {
     return new ReadBackgroundOutputInvocation(
+      this.context,
+      params,
+      messageBus,
+      this.name,
+    );
+  }
+}
+
+// --- send_shell_input ---
+
+interface SendShellInputParams {
+  pid: number;
+  input: string;
+  append_newline?: boolean;
+}
+
+class SendShellInputInvocation extends BaseToolInvocation<
+  SendShellInputParams,
+  ToolResult
+> {
+  constructor(
+    private readonly context: AgentLoopContext,
+    params: SendShellInputParams,
+    messageBus: MessageBus,
+    toolName?: string,
+    toolDisplayName?: string,
+  ) {
+    super(params, messageBus, toolName, toolDisplayName);
+  }
+
+  getDescription(): string {
+    return `Sending input to background process ${this.params.pid}`;
+  }
+
+  override async shouldConfirmExecute(
+    abortSignal: AbortSignal,
+    forcedDecision?: ForcedToolDecision,
+  ) {
+    if (forcedDecision) {
+      return super.shouldConfirmExecute(abortSignal, forcedDecision);
+    }
+
+    const backgroundProcess = this.getBackgroundProcess();
+    if (
+      backgroundProcess &&
+      commandMayEvaluateShellInput(backgroundProcess.command)
+    ) {
+      return super.shouldConfirmExecute(abortSignal);
+    }
+
+    return false;
+  }
+
+  private getBackgroundProcess(): BackgroundProcess | undefined {
+    const processes = ShellExecutionService.listBackgroundProcesses(
+      this.context.config.getSessionId(),
+    );
+    return processes.find((p) => p.pid === this.params.pid);
+  }
+
+  async execute({ abortSignal: _signal }: ExecuteOptions): Promise<ToolResult> {
+    const pid = this.params.pid;
+    const backgroundProcess = this.getBackgroundProcess();
+
+    if (!backgroundProcess) {
+      return {
+        llmContent: `Access denied. Background process ID ${pid} not found in this session's history.`,
+        returnDisplay: 'Access denied.',
+        error: {
+          message: `Background process history lookup failed for PID ${pid}`,
+          type: ToolErrorType.EXECUTION_FAILED,
+        },
+      };
+    }
+
+    if (backgroundProcess.status !== 'running') {
+      return {
+        llmContent: `Cannot send input to process ID ${pid} because it is no longer running.`,
+        returnDisplay: `PID ${pid} is not running.`,
+        error: {
+          message: `Background process ${pid} is not running`,
+          type: ToolErrorType.EXECUTION_FAILED,
+        },
+      };
+    }
+
+    if (!ShellExecutionService.isPtyActive(pid)) {
+      return {
+        llmContent: `Cannot send input to process ID ${pid} because it is not active.`,
+        returnDisplay: `PID ${pid} is not active.`,
+        error: {
+          message: `Background process ${pid} is not active`,
+          type: ToolErrorType.EXECUTION_FAILED,
+        },
+      };
+    }
+
+    const appendNewline = this.params.append_newline ?? true;
+    const input = appendNewline ? `${this.params.input}\r` : this.params.input;
+    ShellExecutionService.writeToPty(pid, input);
+
+    const content = `Sent input to background process ${pid}. Use read_background_output with this PID to inspect the resulting output.`;
+    return {
+      llmContent: content,
+      returnDisplay: content,
+    };
+  }
+}
+
+export class SendShellInputTool extends BaseDeclarativeTool<
+  SendShellInputParams,
+  ToolResult
+> {
+  static readonly Name = 'send_shell_input';
+
+  constructor(
+    private readonly context: AgentLoopContext,
+    messageBus: MessageBus,
+  ) {
+    super(
+      SendShellInputTool.Name,
+      'Send Shell Input',
+      'Sends text or keystrokes to an active background shell process that was started by the agent in the current session.',
+      Kind.Execute,
+      {
+        type: 'object',
+        properties: {
+          pid: {
+            type: 'integer',
+            description:
+              'The process ID (PID) of the running background shell process to receive input.',
+          },
+          input: {
+            type: 'string',
+            description:
+              'The text or raw ANSI/control sequence to send. To press Enter with no text, pass an empty string and leave append_newline true.',
+          },
+          append_newline: {
+            type: 'boolean',
+            description:
+              'Optional. Defaults to true, appending Enter after the input. Set false for raw key sequences such as arrow keys, Escape, Ctrl+C, or Tab.',
+          },
+        },
+        required: ['pid', 'input'],
+      },
+      messageBus,
+    );
+  }
+
+  protected createInvocation(
+    params: SendShellInputParams,
+    messageBus: MessageBus,
+  ) {
+    return new SendShellInputInvocation(
       this.context,
       params,
       messageBus,

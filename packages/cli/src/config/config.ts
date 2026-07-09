@@ -46,6 +46,7 @@ import {
   type HookEventName,
   type OutputFormat,
   detectIdeFromEnv,
+  resolveModelProviderConfigFromEnv,
 } from '@google/gemini-cli-core';
 import {
   type Settings,
@@ -838,9 +839,14 @@ export async function loadCliConfig(
     interactive,
   );
 
+  const modelProviderConfig = resolveModelProviderConfigFromEnv();
   const defaultModel = GEMINI_MODEL_ALIAS_AUTO;
   const rawModel =
-    argv.model || process.env['GEMINI_MODEL'] || settings.model?.name;
+    argv.model ||
+    process.env['GEMINI_MODEL'] ||
+    process.env['AI_MODEL'] ||
+    process.env['LLM_MODEL'] ||
+    settings.model?.name;
 
   // Ensure specifiedModel is a string (e.g. if yargs parsed multiple --model as an array)
   const specifiedModel = Array.isArray(rawModel)
@@ -1033,6 +1039,7 @@ export async function loadCliConfig(
     fileDiscoveryService: fileService,
     bugCommand: settings.advanced?.bugCommand,
     model: resolvedModel,
+    modelProviderConfig,
     maxSessionTurns: settings.model?.maxSessionTurns,
 
     listExtensions: argv.listExtensions || false,
